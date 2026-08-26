@@ -115,7 +115,7 @@ dependencies {
     // Shake-to-report, the wheel, and the LightSync backup provider. The wheel arrived in
     // the library at 1.2.0; until this version it was a vendored copy under
     // com.gios.lightchat.hw, which is now deleted.
-    implementation("com.gios:light-common:1.2.3")
+    implementation("com.gios:light-common:1.4.1")
     // What actually applies the baseline profile that ships inside light-common's AAR.
     // Below API 31 nothing on the device reads a profile on its own — the installer only
     // learned to on Android 12 — so without this the profile is inert bytes in the APK and
