@@ -277,12 +277,15 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 // keeps the title centred.
                 trailing = if (callNumber != null) {
                     {
-                        HapticText(
-                            text = if (confirmingCall) "Call?" else "Call",
-                            style = ChatType.hint,
-                            // Brightened once armed, exactly as Remove? is: the word changed, and
-                            // on a greyscale panel the weight is what makes that noticeable.
-                            color = if (confirmingCall) ChatColors.onSurface else ChatColors.onSurfaceDim,
+                        HapticIcon(
+                            icon = PhoneIcon,
+                            // Icon-only, but the accessibility label stays the plain verb — the
+                            // visible glyph never carries the armed "Call?" question, only the tint
+                            // does (see below), so a screen reader is never asked to read a "?".
+                            contentDescription = "Call",
+                            // Brightened once armed, exactly as Remove? is: on a greyscale panel
+                            // the weight is what makes the confirm step noticeable.
+                            tint = if (confirmingCall) ChatColors.onSurface else ChatColors.onSurfaceDim,
                             onClick = {
                                 if (confirmingCall) {
                                     confirmingCall = false

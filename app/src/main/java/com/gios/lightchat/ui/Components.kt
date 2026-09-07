@@ -11,9 +11,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,12 +27,14 @@ import com.gios.lightchat.Dialer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.gios.lightchat.ui.theme.ChatColors
 import com.gios.lightchat.ui.theme.ChatType
@@ -74,6 +78,39 @@ fun HapticText(
                 }
             },
         ),
+    )
+}
+
+/**
+ * A tappable icon with the same haptic tick as [HapticText] — the icon-only counterpart used
+ * where a header action (New, Call) used to be a text word. [contentDescription] carries the
+ * accessibility label the visible glyph can no longer spell out on its own.
+ */
+@Composable
+fun HapticIcon(
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    size: Dp = 22.dp,
+    onClick: () -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    Icon(
+        imageVector = icon,
+        contentDescription = contentDescription,
+        tint = tint,
+        modifier = modifier
+            .size(size)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick()
+                },
+            ),
     )
 }
 

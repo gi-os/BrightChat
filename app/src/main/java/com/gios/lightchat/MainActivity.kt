@@ -330,6 +330,10 @@ fun LightChatApp(viewModel: ChatViewModel) {
     // actually for, and opening on the full message list meant scrolling past everyone else to
     // reach them. Known is still one tap away and still called "Messages".
     var tab by rememberSaveable { mutableStateOf(ConversationTab.Favorites) }
+    // Whether the list header's "there's Settings behind this title" hint has already played
+    // this app session. Plain `remember`, not `rememberSaveable`: the point is once-per-open,
+    // and a fresh process is a fresh "open".
+    var titleHintPlayed by remember { mutableStateOf(false) }
     // One scroll position per tab, so switching tabs doesn't scramble the others.
     // Spelled out rather than built in a loop: `remember` inside an iteration is
     // positional, and three named values are easier to trust than that.
@@ -407,6 +411,8 @@ fun LightChatApp(viewModel: ChatViewModel) {
             onSelectTab = { tab = it },
             onOpenSettings = { showSettings = true },
             onNewMessage = { viewModel.startNewMessage() },
+            playTitleHint = !titleHintPlayed,
+            onTitleHintPlayed = { titleHintPlayed = true },
         )
     }
 }

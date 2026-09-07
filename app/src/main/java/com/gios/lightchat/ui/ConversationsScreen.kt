@@ -2,6 +2,7 @@
 
 package com.gios.lightchat.ui
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -39,6 +40,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.gios.light.common.hw.WheelScroll
 import com.gios.lightchat.ChatViewModel
 import com.gios.lightchat.Conversation
@@ -47,6 +51,7 @@ import com.gios.lightchat.Status
 import com.gios.lightchat.ui.theme.ChatColors
 import com.gios.lightchat.ui.theme.ChatType
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -67,6 +72,15 @@ fun ConversationsScreen(
     onSelectTab: (ConversationTab) -> Unit,
     onOpenSettings: () -> Unit,
     onNewMessage: () -> Unit,
+    /**
+     * Whether the title should still play its one-time "there's a Settings page here" hint.
+     * Hoisted to [com.gios.lightchat.LightChatApp] rather than remembered locally: this screen
+     * leaves the composition entirely every time a thread, settings or the composer is open (see
+     * the class doc above), so a flag remembered here would replay the hint on every return to
+     * the list — which reads as a loop, not a one-time nudge.
+     */
+    playTitleHint: Boolean = false,
+    onTitleHintPlayed: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
 
@@ -93,19 +107,19 @@ fun ConversationsScreen(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HapticText(
-                text = "New",
-                style = ChatType.hint,
-                color = ChatColors.onSurfaceVariant,
-                onClick = onNewMessage,
-                modifier = Modifier.width(56.dp),
-                textAlign = TextAlign.Start,
-            )
+            Box(modifier = Modifier.width(56.dp), contentAlignment = Alignment.CenterStart) {
+                HapticIcon(
+                    icon = PlusIcon,
+                    contentDescription = "New conversation",
+                    tint = ChatColors.onSurfaceVariant,
+                    onClick = onNewMessage,
+                )
+            }
             Spacer(modifier = Modifier.weight(1f))
-            HapticText(
-                text = tab.title,
-                style = ChatType.body,
-                color = ChatColors.onSurface,
+            AnimatedTitle(
+                title = tab.title,
+                playHint = playTitleHint,
+                onHintPlayed = onTitleHintPlayed,
                 onClick = onOpenSettings,
             )
             Spacer(modifier = Modifier.weight(1f))
@@ -329,3 +343,52 @@ private fun ConversationRow(
     }
 }
 
+
+/**
+ * The list header's title — normally the current tab's name, tappable through to Settings.
+ *
+ * **The hint.** First time this ever shows (see [playTitleHint]'s doc at the call site), it
+ * fades from the tab title to "Settings" and back — a quick, silent "there's a page behind this
+ * word" nudge for the one piece of navigation on this screen with no visible affordance at all
+ * (no icon, no chevron — just a tappable word, which is easy to never discover). It runs once
+ * and never loops: [onHintPlayed] fires after the fade back completes, and the caller's flag
+ * keeps it from running again for the rest of this app session.
+ */
+@Composable
+private fun AnimatedTitle(
+    title: String,
+    playHint: Boolean,
+    onHintPlayed: () -> Unit,
+    onClick: () -> Unit,
+) {
+    var showingHint by remember { mutableStateOf(false) }
+    LaunchedEffect(playHint) {
+        if (!playHint) return@LaunchedEffect
+        delay(TITLE_HINT_DELAY_MS)
+        showingHint = true
+        delay(TITLE_HINT_HOLD_MS)
+        showingHint = false
+        // Let the fade back finish before telling the caller it's done, so a recomposition
+        // mid-fade (e.g. the tab changing) can't cut the return trip short.
+        delay(TITLE_HINT_FADE_MS)
+        onHintPlayed()
+    }
+    Crossfade(targetState = if (playHint) showingHint else false, label = "titleHint") { hint ->
+        HapticText(
+            text = if (hint) "Settings" else title,
+            style = ChatType.body,
+            color = ChatColors.onSurface,
+            onClick = onClick,
+        )
+    }
+}
+
+/** Before the hint starts fading in — a beat to let the screen settle first. */
+private const val TITLE_HINT_DELAY_MS = 600L
+
+/** How long "Settings" stays up before fading back. */
+private const val TITLE_HINT_HOLD_MS = 1_100L
+
+/** Roughly Crossfade's own default animation length, given as a wait so [onHintPlayed] never
+ *  fires mid-fade. */
+private const val TITLE_HINT_FADE_MS = 400L
