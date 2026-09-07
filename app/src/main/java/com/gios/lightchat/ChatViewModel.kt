@@ -2610,11 +2610,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** A `chat-read-status-changed` from the socket: the chat was read somewhere
-     *  (another device, or our own markRead echoing back) — drop its unread dot. */
+     *  (another device, or our own markRead echoing back) — drop its unread dot.
+     *
+     *  Don't trust the bare event: the server's chat.db poller can report `read: true`
+     *  describing the state *before* a message that just arrived (see
+     *  SocketService.onReadStatus / newestIsRead — same race, same fix). Verify the
+     *  chat's actual newest message carries a dateRead before clearing the dot. */
     private fun applyReadStatus(event: ReadStatusEvent) {
         if (!event.read) return
-        _state.value.conversations.firstOrNull { event.chatGuid in it.guids }
-            ?.let { clearUnread(it.guid) }
+        val convo = _state.value.conversations.firstOrNull { event.chatGuid in it.guids } ?: return
+        viewModelScope.launch {
+            val stillUnread = withContext(Dispatchers.IO) {
+                val client = api ?: return@withContext false
+                val newest = runCatching { client.messages(event.chatGuid, limit = 5) }
+                    .getOrNull()
+                    ?.filterNot { it.fromMe || it.isGroupEvent }
+                    ?.maxByOrNull { it.date }
+                    ?: return@withContext false
+                newest.dateRead == 0L
+            }
+            if (!stillUnread) clearUnread(convo.guid)
+        }
     }
 
     /** Clears [convoGuid]'s unread marker in the list and records it in
