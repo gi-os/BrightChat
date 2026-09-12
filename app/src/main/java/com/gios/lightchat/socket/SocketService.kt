@@ -20,6 +20,8 @@ import com.gios.lightchat.LoginCodes
 import com.gios.lightchat.Notifications
 import com.gios.lightchat.PendingAlerts
 import com.gios.lightchat.PollAlarm
+import com.gios.lightchat.ReadReceipt
+import com.gios.lightchat.ReadVerdict
 import com.gios.lightchat.SenderFilter
 import com.gios.lightchat.ReadStatusEvent
 import com.gios.lightchat.RoomIdentity
@@ -263,16 +265,16 @@ class SocketService : Service() {
 
     /**
      * Whether [chatGuid]'s newest incoming message has actually been read. False on any
-     * failure: keeping an alert we can't justify dismissing is the safe direction.
+     * failure: keeping an alert we can't justify dismissing is the safe direction, and
+     * [ReadReceipt] now says so in a word rather than in a boolean whose safe value
+     * depends on which way round the caller phrased its question.
      */
     private suspend fun newestIsRead(chatGuid: String): Boolean = withContext(Dispatchers.IO) {
         val client = client() ?: return@withContext false
-        val newest = runCatching { client.messages(chatGuid, limit = 5) }
-            .getOrNull()
-            ?.filterNot { it.fromMe || it.isGroupEvent }
-            ?.maxByOrNull { it.date }
-            ?: return@withContext false
-        newest.dateRead != 0L
+        val verdict = ReadReceipt.verdict(
+            runCatching { client.messages(chatGuid, limit = ReadReceipt.VERIFY_LIMIT) }.getOrNull(),
+        )
+        verdict == ReadVerdict.READ
     }
 
     /** Built on demand from the stored setup, and only for [newestIsRead] — the socket

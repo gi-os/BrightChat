@@ -79,8 +79,8 @@ android {
         minSdk = 34   // Light Phone III runs Android 14 — the only target device.
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
-        versionCode = 18
-        versionName = "2.37.0"
+        versionCode = 19
+        versionName = "2.38.0"
 
         buildConfigField("String", "REPORT_TOKEN", "\"$reportToken\"")
         // Scrambled, not encrypted — see [scramble]. Decoded by `api/KlipyKey.kt`.

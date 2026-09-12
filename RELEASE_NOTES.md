@@ -1,3 +1,30 @@
+## BrightChat v2.38 — unread dots stop clearing themselves
+
+**A chat you never opened no longer loses its unread dot.**
+
+When the Mac reads a chat, the server sends a `chat-read-status-changed` event and the app
+drops that chat's dot. The event carries no timestamp and the server's chat.db poller will
+report `read: true` about the state just before a new message, so the app checks the claim
+first: it asks for the chat's newest messages and looks for a `dateRead` stamp.
+
+The check answered yes or no, and it answered no by saying "not unread" — which cleared the
+dot. So every way of failing to get an answer cleared it: the tunnel being down, a timeout,
+the event arriving before the API client was built, or a chat whose newest rows are all mine
+or all group renames, none of which carry a `dateRead` at all. The clear is written through
+to disk, so a dot lost that way stayed lost, and the message behind it went unread forever.
+
+The check now has a third answer. `ReadReceipt.verdict` returns read, unread, or unknown,
+and the dot is cleared only on a straight read. Everything else leaves it alone — a dot that
+lingers a few minutes longer costs a glance, a dot that vanishes costs the message. The same
+verdict now backs the socket's notification-dismissal check, which had the same three cases
+and already treated them the right way round; the two were opposite readings of the same
+boolean, which is how one of them came out backwards.
+
+It shows up most on chats you don't open on the phone, because those are the ones whose dot
+is the only thing telling you they're there.
+
+- 141 tests.
+
 ## BrightChat v2.37 — video plays in the app, header actions are icons, and a Settings hint
 
 **Header polish, and a look at what Phase 3 already shipped.** Video attachments already play

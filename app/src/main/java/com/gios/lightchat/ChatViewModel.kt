@@ -2614,22 +2614,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *
      *  Don't trust the bare event: the server's chat.db poller can report `read: true`
      *  describing the state *before* a message that just arrived (see
-     *  SocketService.onReadStatus / newestIsRead — same race, same fix). Verify the
-     *  chat's actual newest message carries a dateRead before clearing the dot. */
+     *  SocketService.onReadStatus — same race, same verification). Ask the server whether
+     *  the chat's newest incoming message actually carries a dateRead, and clear the dot
+     *  only on a straight yes.
+     *
+     *  **Only on a yes.** This used to compute a `stillUnread` boolean that came back
+     *  `false` whenever the question couldn't be answered — an unreachable server, a
+     *  timeout, no client yet, or a chat whose newest rows are all mine or all group
+     *  events — and `false` meant "not unread", so the dot went. And [clearUnread] writes
+     *  through to the store, so a dot lost that way never came back. That is the
+     *  "BrightChat marks my messages as read by itself" bug: every one of those is
+     *  [ReadVerdict.UNKNOWN] now, and unknown leaves the dot alone. */
     private fun applyReadStatus(event: ReadStatusEvent) {
         if (!event.read) return
         val convo = _state.value.conversations.firstOrNull { event.chatGuid in it.guids } ?: return
         viewModelScope.launch {
-            val stillUnread = withContext(Dispatchers.IO) {
-                val client = api ?: return@withContext false
-                val newest = runCatching { client.messages(event.chatGuid, limit = 5) }
-                    .getOrNull()
-                    ?.filterNot { it.fromMe || it.isGroupEvent }
-                    ?.maxByOrNull { it.date }
-                    ?: return@withContext false
-                newest.dateRead == 0L
+            val verdict = withContext(Dispatchers.IO) {
+                val client = api ?: return@withContext ReadVerdict.UNKNOWN
+                ReadReceipt.verdict(
+                    runCatching { client.messages(event.chatGuid, limit = ReadReceipt.VERIFY_LIMIT) }
+                        .getOrNull(),
+                )
             }
-            if (!stillUnread) clearUnread(convo.guid)
+            if (verdict == ReadVerdict.READ) clearUnread(convo.guid)
         }
     }
 
