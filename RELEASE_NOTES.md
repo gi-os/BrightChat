@@ -1,3 +1,22 @@
+## BrightChat v2.39 — one switch turns every buzz off
+
+**Settings has a Panel section now, with "Buzz on tap" in it.** Turn it off and nothing you
+touch in the app buzzes: no tap, no long press, no menu pick, on any screen.
+
+Nearly two hundred places in this app tick the motor. Gating them one at a time would have
+meant editing every screen, and the next button added would have arrived ungated, which is the
+kind of bug that comes back. So the switch went where they all already look. Compose hands every
+one of them the same haptic-feedback object, and the app's theme — the one piece all three of
+its windows go through — now hands them a wrapped one with the switch in front. Every button
+that exists and every button that will exist is covered without knowing the switch is there.
+
+The buzz a new message makes is deliberately not covered. That is an alert, not feedback on
+something you just touched, and someone who wants a quiet keypad still wants to know a text
+arrived. It stays under the phone's own notification settings.
+
+On by default: nothing on these screens has a button border, and the tick is how a tap says it
+landed.
+
 ## BrightChat v2.38 — unread dots stop clearing themselves
 
 **A chat you never opened no longer loses its unread dot.**

@@ -209,6 +209,27 @@ fun SettingsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
             onBack()
         }
 
+        // ---------------------------------------------------------------------------- panel
+        SectionHeader("Panel")
+
+        // On by default: nothing on this screen has a button border, and the tick is how a tap
+        // says it landed. Off covers every tap, long press and menu pick in the app in one go
+        // (see Haptics) — but not the buzz a new message makes, which is an alert rather than
+        // feedback and belongs to the phone's notification settings.
+        var haptics by remember { mutableStateOf(Haptics.enabled(context)) }
+        Toggle(
+            label = if (haptics) "Buzz on tap: on" else "Buzz on tap: off",
+            hint = if (haptics) {
+                "Every tap gives a short tick."
+            } else {
+                "Nothing you tap buzzes. New messages still do."
+            },
+            onClick = {
+                haptics = !haptics
+                Haptics.set(context, haptics)
+            },
+        )
+
         // ----------------------------------------------------------------------------- calls
         // Only on a phone that can place a call at all.
         if (Dialer.available(context)) {

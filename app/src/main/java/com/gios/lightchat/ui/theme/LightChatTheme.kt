@@ -12,6 +12,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -22,6 +23,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gios.lightchat.R
+import com.gios.lightchat.ui.rememberGatedHaptics
 
 object ChatColors {
     val background = Color.Black
@@ -99,6 +101,9 @@ fun LightChatTheme(fillScreen: Boolean = true, content: @Composable () -> Unit) 
     val density = LocalDensity.current
     CompositionLocalProvider(
         LocalDensity provides Density(density.density, fontScale = 0.85f),
+        // Every buzz in the app goes through LocalHapticFeedback, and all three windows go
+        // through this theme, so one switch here turns the lot off. See [com.gios.lightchat.ui.Haptics].
+        LocalHapticFeedback provides rememberGatedHaptics(),
     ) {
         MaterialTheme(
             colorScheme = darkColorScheme(

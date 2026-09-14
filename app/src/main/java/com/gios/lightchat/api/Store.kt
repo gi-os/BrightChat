@@ -30,6 +30,7 @@ object Store {
     private const val KEY_POLL_FAILS = "poll_fails"   // consecutive failures
     private const val KEY_NOTIFY_UNKNOWN = "notify_unknown" // alert for senders not in the address book
     private const val KEY_HEADS_UP = "heads_up_box" // show the on-screen box for new messages
+    private const val KEY_HAPTICS = "haptics"       // buzz on every tap
     private const val KEY_ALERTS_OWNED = "alerts_owned" // BrightControl draws the box for every app
     private const val KEY_CALL_ANNOUNCE = "call_announce" // text people the dumb-phone number when calling them
     private const val KEY_MY_NUMBER = "my_number" // manual override for the SIM's own number
@@ -370,6 +371,21 @@ object Store {
 
     fun setHeadsUpBox(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_HEADS_UP, value).apply()
+    }
+
+    /**
+     * Whether a tap buzzes the motor.
+     *
+     * On by default — the tick is how a screen with no button borders tells you the tap landed.
+     * Off silences every tap, long press and menu pick in the app at once; see
+     * [com.gios.lightchat.ui.Haptics] for where the switch is applied. The buzz a new message
+     * makes is a notification, not feedback, and is not covered by this.
+     */
+    fun haptics(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_HAPTICS, true)
+
+    fun setHaptics(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_HAPTICS, value).apply()
     }
 
     /**
