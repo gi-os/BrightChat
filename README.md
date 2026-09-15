@@ -2,6 +2,8 @@
 
 # BrightChat
 
+[**⬇ Download the latest APK**](https://github.com/gi-os/BrightChat/releases/latest) · free, open source.
+
 An **iMessage client** for the [Light Phone III](https://www.thelightphone.com/),
 talking to an always-on, self-hosted [BlueBubbles Server](https://github.com/BlueBubblesApp/bluebubbles-server)
 reached privately over [Tailscale](https://tailscale.com/). Package
