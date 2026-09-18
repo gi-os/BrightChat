@@ -30,8 +30,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -405,6 +413,7 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                                     viewModel.openAttachment(attachment)
                                 }
                             },
+                            onSaveAttachment = { viewModel.saveAttachment(it) },
                             canReact = state.privateApi,
                             pickerOpen = reactingTo == message.guid,
                             onLongPress = { if (state.privateApi) reactingTo = message.guid },
@@ -479,6 +488,9 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 },
                 onPickImage = { picking = true },
                 onPickGif = { pickingGif = true },
+                // A GIF or a photograph handed over by the keyboard, or pasted, goes the same way
+                // a share does: copied out of somebody else's URI and sent as a file.
+                onReceiveImage = { uri -> viewModel.sendUris(listOf(uri)) },
                 onTextChange = viewModel::onComposeTextChanged,
                 // Offered only when there is a server to transcribe against and a microphone we are
                 // allowed to open. A key that cannot work is worse than no key.
@@ -495,6 +507,7 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 viewModel::loadImage,
                 onClose = { viewingImage = null },
                 loadFile = viewModel::loadImageFile,
+                onSave = { viewModel.saveAttachment(image) },
             )
         }
 
@@ -600,6 +613,15 @@ fun ComposeBar(
      */
     onPickGif: (() -> Unit)? = null,
     onTextChange: ((String) -> Unit)? = null,
+    /**
+     * An image arriving through the field itself: a keyboard's GIF or sticker, a paste, a drag.
+     *
+     * Null on the screens where there is nowhere to send one. Supplying it is also what tells the
+     * keyboard that images are welcome here — Compose puts the declared types on the EditorInfo
+     * from the content receiver, and a keyboard with no such declaration will not offer an image at
+     * all. See [BrightKeyboard's GifInsert] for the other side of that handshake.
+     */
+    onReceiveImage: ((android.net.Uri) -> Unit)? = null,
     showTopDivider: Boolean = true,
     /**
      * Tap to speak, tap again and the words arrive.
@@ -610,7 +632,16 @@ fun ComposeBar(
     onDictate: ((onWords: (String) -> Unit) -> Unit)? = null,
     dictating: Boolean = false,
 ) {
-    var input by remember { mutableStateOf("") }
+    // A TextFieldState rather than a String, because `Modifier.contentReceiver` only works on the
+    // state-based BasicTextField — and receiving an image is the whole reason this field exists on
+    // a messaging app. Everything else about it is unchanged.
+    val state = rememberTextFieldState()
+    val input = state.text.toString()
+    if (onTextChange != null) {
+        LaunchedEffect(state) {
+            snapshotFlow { state.text.toString() }.collect { onTextChange(it) }
+        }
+    }
     Column(modifier = Modifier.fillMaxWidth()) {
         // Suppressed when the caller already draws a divider right above us (the
         // new-message screen's "To" line) — otherwise it reads as a double line.
@@ -648,15 +679,22 @@ fun ComposeBar(
                     Text(text = "Message", style = ChatType.body, color = ChatColors.onSurfaceDisabled)
                 }
                 BasicTextField(
-                    value = input,
-                    onValueChange = { input = it; onTextChange?.invoke(it) },
+                    state = state,
                     textStyle = ChatType.body.copy(color = ChatColors.onSurface),
                     cursorBrush = SolidColor(ChatColors.onSurface),
                     keyboardOptions = KeyboardOptions(
                         capitalization = KeyboardCapitalization.Sentences,
                         autoCorrectEnabled = true,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (onReceiveImage == null) {
+                                Modifier
+                            } else {
+                                Modifier.contentReceiver(imageReceiver(onReceiveImage))
+                            },
+                        ),
                 )
             }
             if (onDictate != null) {
@@ -670,8 +708,10 @@ fun ComposeBar(
                     listening = dictating,
                     onClick = {
                         onDictate { words ->
-                            input = if (input.isBlank()) words else "${input.trimEnd()} $words"
-                            onTextChange?.invoke(input)
+                            val now = state.text.toString()
+                            state.setTextAndPlaceCursorAtEnd(
+                                if (now.isBlank()) words else "${now.trimEnd()} $words",
+                            )
                         }
                     },
                 )
@@ -682,12 +722,38 @@ fun ComposeBar(
                 style = ChatType.body,
                 color = if (input.isBlank()) ChatColors.onSurfaceDisabled else ChatColors.onSurface,
                 onClick = {
-                    if (input.isNotBlank()) {
-                        onSend(input)
-                        input = ""
+                    val text = state.text.toString()
+                    if (text.isNotBlank()) {
+                        onSend(text)
+                        state.clearText()
                     }
                 },
             )
+        }
+    }
+}
+
+/**
+ * Takes the images out of something dropped, pasted, or handed over by a keyboard.
+ *
+ * `consume` returns what is *left* — the contract is that a receiver hands back whatever it did not
+ * deal with, so the platform can pass it on. Items with a URI are taken and everything else (plain
+ * text, most obviously) is left alone, which is what lets a paste of mixed content still put its
+ * text in the field.
+ *
+ * The type is not filtered here. There is no pre-filtering by media type in the API and an
+ * attachment does not have to be an image for this app to send it — a video pasted in is as valid
+ * as a GIF, and the send path reads the real type off the file it copies.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private fun imageReceiver(onReceive: (android.net.Uri) -> Unit) = ReceiveContentListener { content ->
+    content.consume { item ->
+        val uri = item.uri
+        if (uri == null) {
+            false
+        } else {
+            onReceive(uri)
+            true
         }
     }
 }
@@ -717,6 +783,8 @@ private fun MessageRow(
     loadFile: suspend (Attachment) -> java.io.File?,
     onImageTap: (Attachment) -> Unit,
     onOpenAttachment: (Attachment) -> Unit,
+    /** Hold an attachment to keep it. Null where there is nothing to save it with. */
+    onSaveAttachment: ((Attachment) -> Unit)? = null,
     canReact: Boolean,
     pickerOpen: Boolean,
     onLongPress: () -> Unit,
@@ -797,7 +865,7 @@ private fun MessageRow(
         // keep the same cap whether or not there's a reaction.
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             if (message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
-            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH))
+            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, onSaveAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH))
             if (!message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
         }
         // "Not delivered" on any sent message the Mac later failed to deliver
@@ -880,6 +948,8 @@ private fun MessageContent(
     loadFile: suspend (Attachment) -> java.io.File?,
     onImageTap: (Attachment) -> Unit,
     onOpenAttachment: (Attachment) -> Unit,
+    /** Hold an attachment to keep it. Null where there is nothing to save it with. */
+    onSaveAttachment: ((Attachment) -> Unit)? = null,
     canReact: Boolean,
     pickerOpen: Boolean,
     onLongPress: () -> Unit,
@@ -929,7 +999,9 @@ private fun MessageContent(
             Spacer(modifier = Modifier.height(if (body != null) 6.dp else 4.dp))
         }
         message.files.forEach { file ->
-            AttachmentFile(file, textAlign) { onOpenAttachment(file) }
+            AttachmentFile(file, textAlign, onSave = onSaveAttachment?.let { save -> { save(file) } }) {
+                onOpenAttachment(file)
+            }
             Spacer(modifier = Modifier.height(if (body != null) 6.dp else 4.dp))
         }
         if (body != null) {
@@ -1107,7 +1179,12 @@ private fun AttachmentGif(
 /** A non-image attachment as a tappable, underlined "Type · filename" row —
  *  tapping downloads it and hands off to an external app. */
 @Composable
-private fun AttachmentFile(attachment: Attachment, textAlign: TextAlign, onOpen: () -> Unit) {
+private fun AttachmentFile(
+    attachment: Attachment,
+    textAlign: TextAlign,
+    onSave: (() -> Unit)? = null,
+    onOpen: () -> Unit,
+) {
     HapticText(
         text = attachment.fileLabel,
         style = ChatType.body,
@@ -1115,6 +1192,9 @@ private fun AttachmentFile(attachment: Attachment, textAlign: TextAlign, onOpen:
         underline = true,
         textAlign = textAlign,
         modifier = Modifier.fillMaxWidth(),
+        // Tap opens it in whatever can read it, hold keeps it. The same pairing as the image
+        // viewer, so one gesture means the same thing everywhere an attachment appears.
+        onLongClick = onSave,
         onClick = onOpen,
     )
 }

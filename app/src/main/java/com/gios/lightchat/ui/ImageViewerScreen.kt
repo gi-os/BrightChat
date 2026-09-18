@@ -78,6 +78,15 @@ fun ImageViewerScreen(
      * that refuses to open.
      */
     loadFile: (suspend (Attachment) -> java.io.File?)? = null,
+    /**
+     * Hold the picture to keep it.
+     *
+     * A long press because there is nowhere to put a button: the viewer is the photograph and
+     * nothing else, which is the point of it, and a chrome bar over somebody's picture to hold one
+     * action would be the wrong trade. The confirmation is the app's own status line, as with every
+     * other thing that takes a moment here.
+     */
+    onSave: (() -> Unit)? = null,
 ) {
     // True color for exactly as long as the viewer is up (vandamd's zero trick;
     // see ColorMode — a no-op without the one-time WRITE_SECURE_SETTINGS grant).
@@ -166,6 +175,7 @@ fun ImageViewerScreen(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { closing = true },
+                    onLongPress = onSave?.let { save -> { save() } },
                     onDoubleTap = { tap ->
                         if (scale > 1f) {
                             scale = 1f

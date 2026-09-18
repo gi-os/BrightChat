@@ -1526,6 +1526,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return File(dir, safe)
     }
 
+    /**
+     * Send files that arrived as URIs — pasted into the composer, or handed over by the keyboard.
+     *
+     * The URI belongs to whoever produced it and the grant behind it is short-lived, so the bytes
+     * are copied into the cache first and the send reads from there. Same route a share takes; the
+     * only difference is that there is already a thread open to send into.
+     */
+    fun sendUris(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val files = uris.mapNotNull { SharedFiles.copyIntoCache(app, it) }
+            if (files.isEmpty()) {
+                _state.update { it.copy(message = "Couldn't read that") }
+                return@launch
+            }
+            withContext(Dispatchers.Main) { sendImageFiles(files) }
+        }
+    }
+
+    /**
+     * Put an attachment somewhere the rest of the phone can see it.
+     *
+     * Downloaded first if it is not already in the cache — the same file [openAttachment] uses, so
+     * saving something you have just looked at costs nothing — and then copied into shared storage
+     * through MediaStore. See [SharedFiles.saveToGallery] for why a path would not do.
+     */
+    fun saveAttachment(attachment: Attachment) {
+        val client = api ?: return
+        _state.update { it.copy(message = "Saving…") }
+        viewModelScope.launch(Dispatchers.IO) {
+            val message = try {
+                val dest = attachmentFile(attachment)
+                if (!dest.exists() || dest.length() == 0L) client.downloadAttachment(attachment.guid, dest)
+                val target = SaveTo.of(attachment.mimeType, attachment.transferName, attachment.guid)
+                SharedFiles.saveToGallery(app, dest, target) ?: "Couldn't save that"
+            } catch (e: Exception) {
+                android.util.Log.w("ChatViewModel", "save failed", e)
+                "Couldn't save that"
+            }
+            _state.update { it.copy(message = message) }
+        }
+    }
+
     fun openAttachment(attachment: Attachment) {
         val client = api ?: return
         _state.update { it.copy(message = "Downloading…") }

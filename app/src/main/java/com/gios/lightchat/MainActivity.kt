@@ -273,25 +273,10 @@ class MainActivity : ComponentActivity() {
         val chatGuid = intent.getStringExtra(SHARE_EXTRA_CHAT_GUID)?.trim().orEmpty()
         intent.removeExtra(SHARE_EXTRA_ADDRESS)
         intent.removeExtra(SHARE_EXTRA_CHAT_GUID)
-        val files = uris.mapNotNull { copyIntoCache(it) }
+        val files = uris.mapNotNull { SharedFiles.copyIntoCache(this, it) }
         if (files.isEmpty()) return
         viewModel.receiveShared(address, chatGuid, files)
     }
-
-    /** Copies a shared URI into `cacheDir/shared-in`, returning null if it can't be read. */
-    private fun copyIntoCache(uri: Uri): java.io.File? = runCatching {
-        val dir = java.io.File(cacheDir, "shared-in").apply { mkdirs() }
-        // The name only has to carry a plausible extension — the send reads the mime type
-        // off it — and be unique enough that two shares in a row don't collide.
-        // The extension is what the send path reads the mime type back off, so it has to be one
-        // [MediaKind.mimeOf] knows — a mime *subtype* is not an extension. See [MediaKind].
-        val extension = MediaKind.extensionOf(contentResolver.getType(uri))
-        val out = java.io.File(dir, "share-" + System.nanoTime() + "." + extension)
-        contentResolver.openInputStream(uri)?.use { input ->
-            out.outputStream().use { input.copyTo(it) }
-        } ?: return@runCatching null
-        out.takeIf { it.length() > 0 }
-    }.getOrNull()
 
     /** A tapped message notification carries its chat's guid — jump straight to
      *  that thread rather than wherever the app was left. */
