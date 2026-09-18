@@ -54,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.drop
 import com.gios.light.common.hw.WheelScroll
 import kotlinx.coroutines.launch
 import com.gios.lightchat.Dictation
@@ -489,8 +491,8 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 onPickImage = { picking = true },
                 onPickGif = { pickingGif = true },
                 // A GIF or a photograph handed over by the keyboard, or pasted, goes the same way
-                // a share does: copied out of somebody else's URI and sent as a file.
-                onReceiveImage = { uri -> viewModel.sendUris(listOf(uri)) },
+                // a share does — already copied out of somebody else's URI by the time it gets here.
+                onReceiveMedia = { files -> viewModel.sendReceivedFiles(files) },
                 onTextChange = viewModel::onComposeTextChanged,
                 // Offered only when there is a server to transcribe against and a microphone we are
                 // allowed to open. A key that cannot work is worse than no key.
@@ -508,6 +510,9 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 onClose = { viewingImage = null },
                 loadFile = viewModel::loadImageFile,
                 onSave = { viewModel.saveAttachment(image) },
+                // The viewer covers the thread's own status line, so the answer to a hold made in
+                // here has to be drawn in here.
+                status = state.message,
             )
         }
 
@@ -618,10 +623,13 @@ fun ComposeBar(
      *
      * Null on the screens where there is nowhere to send one. Supplying it is also what tells the
      * keyboard that images are welcome here — Compose puts the declared types on the EditorInfo
-     * from the content receiver, and a keyboard with no such declaration will not offer an image at
-     * all. See [BrightKeyboard's GifInsert] for the other side of that handshake.
+     * from the content receiver, and a keyboard whose field declares nothing will not offer an
+     * image at all.
+     *
+     * Files rather than URIs, because the copy has to happen while the grant is still alive — see
+     * [mediaReceiver].
      */
-    onReceiveImage: ((android.net.Uri) -> Unit)? = null,
+    onReceiveMedia: ((List<java.io.File>) -> Unit)? = null,
     showTopDivider: Boolean = true,
     /**
      * Tap to speak, tap again and the words arrive.
@@ -636,11 +644,17 @@ fun ComposeBar(
     // state-based BasicTextField — and receiving an image is the whole reason this field exists on
     // a messaging app. Everything else about it is unchanged.
     val state = rememberTextFieldState()
-    val input = state.text.toString()
-    if (onTextChange != null) {
-        LaunchedEffect(state) {
-            snapshotFlow { state.text.toString() }.collect { onTextChange(it) }
-        }
+    val context = LocalContext.current
+    // Only blankness is read in composition, not the text itself. Reading the text would recompose
+    // the whole bar — and rebuild the content receiver — on every keystroke, which is the cost the
+    // state-based field exists to avoid; the placeholder and the Send colour want no more than this.
+    val blank by remember(state) { derivedStateOf { state.text.isBlank() } }
+    // Held in a state so the effect below, which never restarts, cannot capture a stale one.
+    val notifyTextChange by rememberUpdatedState(onTextChange)
+    LaunchedEffect(state) {
+        // drop(1): snapshotFlow emits the current value the moment it is collected, so without it
+        // opening a thread with a draft still in the field reports typing before a key is touched.
+        snapshotFlow { state.text.toString() }.drop(1).collect { notifyTextChange?.invoke(it) }
     }
     Column(modifier = Modifier.fillMaxWidth()) {
         // Suppressed when the caller already draws a divider right above us (the
@@ -675,7 +689,7 @@ fun ComposeBar(
                 Spacer(modifier = Modifier.width(16.dp))
             }
             Box(modifier = Modifier.weight(1f)) {
-                if (input.isEmpty()) {
+                if (blank) {
                     Text(text = "Message", style = ChatType.body, color = ChatColors.onSurfaceDisabled)
                 }
                 BasicTextField(
@@ -689,10 +703,10 @@ fun ComposeBar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .then(
-                            if (onReceiveImage == null) {
+                            if (onReceiveMedia == null) {
                                 Modifier
                             } else {
-                                Modifier.contentReceiver(imageReceiver(onReceiveImage))
+                                Modifier.contentReceiver(mediaReceiver(context, onReceiveMedia))
                             },
                         ),
                 )
@@ -720,7 +734,7 @@ fun ComposeBar(
             HapticText(
                 text = "Send",
                 style = ChatType.body,
-                color = if (input.isBlank()) ChatColors.onSurfaceDisabled else ChatColors.onSurface,
+                color = if (blank) ChatColors.onSurfaceDisabled else ChatColors.onSurface,
                 onClick = {
                     val text = state.text.toString()
                     if (text.isNotBlank()) {
@@ -734,28 +748,59 @@ fun ComposeBar(
 }
 
 /**
- * Takes the images out of something dropped, pasted, or handed over by a keyboard.
+ * Takes the pictures out of something dropped, pasted, or handed over by a keyboard.
  *
- * `consume` returns what is *left* — the contract is that a receiver hands back whatever it did not
- * deal with, so the platform can pass it on. Items with a URI are taken and everything else (plain
- * text, most obviously) is left alone, which is what lets a paste of mixed content still put its
- * text in the field.
+ * `consume` returns what is *left* — a receiver hands back whatever it did not deal with, so the
+ * platform can pass it on. Items with a URI are taken and everything else is left alone, which is
+ * what lets a paste of mixed content still put its text in the field.
  *
- * The type is not filtered here. There is no pre-filtering by media type in the API and an
- * attachment does not have to be an image for this app to send it — a video pasted in is as valid
- * as a GIF, and the send path reads the real type off the file it copies.
+ * ## The copy happens here, on this thread, on purpose
+ *
+ * The URI belongs to whoever sent it and the grant behind it lasts exactly as long as this call. A
+ * keyboard's `commitContent` grant is scoped to the `InputContentInfo` and Compose releases it the
+ * moment the listener returns; a drag-and-drop grant ends with the drop. Handing the URI to a
+ * coroutine and reading it later works for a clipboard paste — where the grant happens to last the
+ * session — and fails for the keyboard GIF this feature exists for, with nothing to show but
+ * "Couldn't read that".
+ *
+ * So the bytes are copied before returning. It is a blocking read on the UI thread, which is
+ * ordinarily the wrong thing: it is a few megabytes at most, once, in response to a deliberate
+ * action, and the alternative is a feature that does not work.
+ *
+ * ## Only what this app can actually send
+ *
+ * A clip is taken only when it says it holds an image or a video. The send path names a file's type
+ * from its extension and falls back to `image/jpeg`, so a consumed PDF or a `content://` text URI —
+ * which Gmail and Docs both put on the clipboard — would arrive at the other end as a photograph
+ * that will not open. Left unconsumed, it goes wherever it would have gone before.
  */
 @OptIn(ExperimentalFoundationApi::class)
-private fun imageReceiver(onReceive: (android.net.Uri) -> Unit) = ReceiveContentListener { content ->
-    content.consume { item ->
+private fun mediaReceiver(
+    context: android.content.Context,
+    onReceive: (List<java.io.File>) -> Unit,
+) = ReceiveContentListener { content ->
+    val description = content.clipMetadata.clipDescription
+    val sendable = (0 until description.mimeTypeCount).any {
+        val type = description.getMimeType(it)
+        type.startsWith("image/") || type.startsWith("video/")
+    }
+    if (!sendable) return@ReceiveContentListener content
+
+    val files = mutableListOf<java.io.File>()
+    val remaining = content.consume { item ->
         val uri = item.uri
         if (uri == null) {
             false
         } else {
-            onReceive(uri)
-            true
+            // Consumed only if the bytes were actually got. A clip taken and then failed on is a
+            // paste that vanished.
+            SharedFiles.copyIntoCache(context, uri)?.let { files.add(it) } != null
         }
     }
+    // One send for the lot, not one per file: iMessage has no batch send, and racing them lands
+    // them out of order in the other person's thread.
+    if (files.isNotEmpty()) onReceive(files)
+    remaining
 }
 
 /** Fraction of width a single turn may span. No bubbles signal who's talking, so
@@ -1192,8 +1237,10 @@ private fun AttachmentFile(
         underline = true,
         textAlign = textAlign,
         modifier = Modifier.fillMaxWidth(),
-        // Tap opens it in whatever can read it, hold keeps it. The same pairing as the image
-        // viewer, so one gesture means the same thing everywhere an attachment appears.
+        // Tap opens it in whatever can read it, hold keeps it. A hold on a *picture* still opens
+        // the tapback picker, because a picture is something you react to and a file is not — so
+        // the gesture does read differently on a message carrying both, which is the lesser of the
+        // two oddities against a file row whose hold did nothing at all.
         onLongClick = onSave,
         onClick = onOpen,
     )

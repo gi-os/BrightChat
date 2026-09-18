@@ -37,9 +37,12 @@ object SharedFiles {
     /**
      * Copy [file] into shared storage where the rest of the phone can find it.
      *
-     * MediaStore rather than a path: writing into `Pictures` directly has not been allowed for
-     * years, and the folder is no use anyway until something has indexed it — which on LightOS
-     * nothing does (see [Gallery]). An insert both writes the bytes and creates the index entry.
+     * MediaStore rather than a path, because writing into `Pictures` directly has not been allowed
+     * for years — an insert is the only way in, and it both writes the bytes and creates the entry.
+     *
+     * Worth knowing: the file it writes is a real one at `Pictures/BrightChat/…`, and [Gallery]
+     * scans that tree rather than trusting MediaStore, so a photograph saved out of a chat turns up
+     * in this app's own picker afterwards. That is a good outcome and not one anybody asked for.
      *
      * `IS_PENDING` while the bytes are going in, so nothing else sees a half-written photo, and it
      * is cleared in a `finally`: a row left pending is invisible to every gallery on the phone and

@@ -1527,22 +1527,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Send files that arrived as URIs — pasted into the composer, or handed over by the keyboard.
+     * Send files that arrived through the composer — pasted, dropped, or handed over by a keyboard.
      *
-     * The URI belongs to whoever produced it and the grant behind it is short-lived, so the bytes
-     * are copied into the cache first and the send reads from there. Same route a share takes; the
-     * only difference is that there is already a thread open to send into.
+     * Already copied out of the sender's URI by the time they reach here; that has to happen while
+     * the grant is alive, which is inside the content listener. See `ThreadScreen.mediaReceiver`.
      */
-    fun sendUris(uris: List<android.net.Uri>) {
-        if (uris.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val files = uris.mapNotNull { SharedFiles.copyIntoCache(app, it) }
-            if (files.isEmpty()) {
-                _state.update { it.copy(message = "Couldn't read that") }
-                return@launch
-            }
-            withContext(Dispatchers.Main) { sendImageFiles(files) }
+    fun sendReceivedFiles(files: List<File>) {
+        if (files.isEmpty()) return
+        if (_state.value.open == null) {
+            // The clip has been taken and the bytes are in the cache, so saying nothing would be a
+            // paste that simply vanished.
+            _state.update { it.copy(message = "Open a chat to send that") }
+            pendingShared = files
+            return
         }
+        sendImageFiles(files)
     }
 
     /**
@@ -1553,12 +1552,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * through MediaStore. See [SharedFiles.saveToGallery] for why a path would not do.
      */
     fun saveAttachment(attachment: Attachment) {
-        val client = api ?: return
+        // Said out loud rather than returned from silently: the gesture has already ticked the
+        // haptic, so doing nothing reads as the hold not having registered.
+        val client = api ?: run {
+            _state.update { it.copy(message = "Not connected") }
+            return
+        }
         _state.update { it.copy(message = "Saving…") }
         viewModelScope.launch(Dispatchers.IO) {
             val message = try {
                 val dest = attachmentFile(attachment)
-                if (!dest.exists() || dest.length() == 0L) client.downloadAttachment(attachment.guid, dest)
+                // An optimistic row's attachment has no guid on the server yet — its bytes are the
+                // ones on their way up, and asking to download them is a 404. downloadAttachment
+                // guards this; saving copied the download and not the guard.
+                val onlyLocal = attachment.guid.startsWith("temp-")
+                if (!onlyLocal && (!dest.exists() || dest.length() == 0L)) {
+                    client.downloadAttachment(attachment.guid, dest)
+                }
+                if (!dest.exists() || dest.length() == 0L) throw IllegalStateException("no bytes")
                 val target = SaveTo.of(attachment.mimeType, attachment.transferName, attachment.guid)
                 SharedFiles.saveToGallery(app, dest, target) ?: "Couldn't save that"
             } catch (e: Exception) {

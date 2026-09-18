@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -30,6 +31,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import com.gios.light.common.hw.WheelScroll
 import com.gios.lightchat.Attachment
 import com.gios.lightchat.ColorMode
@@ -87,6 +89,13 @@ fun ImageViewerScreen(
      * other thing that takes a moment here.
      */
     onSave: (() -> Unit)? = null,
+    /**
+     * What saving had to say, drawn over the photograph.
+     *
+     * The viewer is opaque and covers the app's own status line, so without this the confirmation
+     * for a gesture made *here* appears somewhere the user cannot see until they close the picture.
+     */
+    status: String? = null,
 ) {
     // True color for exactly as long as the viewer is up (vandamd's zero trick;
     // see ColorMode — a no-op without the one-time WRITE_SECURE_SETTINGS grant).
@@ -175,7 +184,11 @@ fun ImageViewerScreen(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { closing = true },
-                    onLongPress = onSave?.let { save -> { save() } },
+                    // Only while the photograph is at rest. Zoomed in, the same press-and-hold is
+                    // the start of a pan, and a hold that fires mid-pan both saves something nobody
+                    // asked for and kills the drag — detectTapGestures consumes the rest of the
+                    // gesture once its long press has run.
+                    onLongPress = onSave?.let { save -> { if (scale == 1f) save() } },
                     onDoubleTap = { tap ->
                         if (scale > 1f) {
                             scale = 1f
@@ -233,6 +246,19 @@ fun ImageViewerScreen(
                 text = if (animated) "[GIF]" else "[Image]",
                 style = ChatType.hint,
                 color = ChatColors.onSurfaceDisabled,
+            )
+        }
+        // Over the picture, at the bottom, and only while there is something to say. It fades with
+        // the rest of the viewer on the way out so it cannot be left hanging over the thread.
+        status?.let { line ->
+            Text(
+                text = line,
+                style = ChatType.hint,
+                color = ChatColors.onSurfaceDisabled,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 24.dp)
+                    .graphicsLayer { alpha = fade.value },
             )
         }
     }

@@ -57,12 +57,18 @@ object SaveTo {
      */
     fun nameFor(mimeType: String?, transferName: String?, fallbackId: String): String {
         val raw = transferName?.trim().orEmpty().ifBlank { fallbackId }
-        val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('.', '_')
-            .ifBlank { "attachment" }
-            .take(MAX_NAME)
+        val safe = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('.', '_').ifBlank { "attachment" }
         val ext = safe.substringAfterLast('.', "")
-        if (ext.isNotBlank() && ext.length <= 5 && ext.all { it.isLetterOrDigit() }) return safe
-        return "$safe.${extensionFor(mimeType)}"
+        val hasExtension = ext.isNotBlank() && ext.length in 2..5 && ext.all { it.isLetter() }
+        // The stem is shortened, never the extension. Capping the whole string first could cut
+        // `photo….jpeg` down to `photo….jp`, which still looks like an extension — so the name kept
+        // it and the file was saved as `.jp`, which opens with nothing.
+        return if (hasExtension) {
+            val stem = safe.dropLast(ext.length + 1).take(MAX_NAME)
+            "$stem.$ext"
+        } else {
+            "${safe.take(MAX_NAME)}.${extensionFor(mimeType)}"
+        }
     }
 
     /**
