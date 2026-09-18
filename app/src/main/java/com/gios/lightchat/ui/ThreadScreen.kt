@@ -90,6 +90,7 @@ import com.gios.lightchat.ChatMessage
 import com.gios.lightchat.ChatViewModel
 import com.gios.lightchat.Contacts
 import com.gios.lightchat.Conversation
+import com.gios.lightchat.SharedFiles
 import com.gios.lightchat.Dialer
 import com.gios.lightchat.ReactionType
 import com.gios.lightchat.URL_REGEX
