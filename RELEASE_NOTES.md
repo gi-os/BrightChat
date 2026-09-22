@@ -1,3 +1,24 @@
+## BrightChat v2.40 — a report now says where it came from
+
+**Every bug report this app ever filed said it came from the `home` screen.** The field the
+report reads is set by the app's navigation, and nothing in this app ever set it, so a shake on
+a thread, a shake on the dialer and a shake in Settings all read the same. The router in
+`MainActivity` already decides which screen draws in one `when`; the same decision now names
+the screen — `thread`, `dialer`, `settings`, `list-favorites`, `newsletter-compose` and so on —
+right after it draws.
+
+This came out of [light-reports#476]: the phone stopped taking touches while a message was being
+sent, came back after the screen slept and a couple of minutes more, and "Buzz on tap" was back
+on afterward. The report carried no trace (the app did not die) and said `home`, which it was
+not. The freeze itself is not fixed here: a phone that ignores the power button for minutes is
+below the app, and nothing in the send path blocks the main thread. What this release does is
+make the next such report say `thread`, and remove the one way the app itself could have lost
+that switch — the setting was written with `apply()`, which queues the write, and a queued write
+is gone if the process is killed before it lands. It is `commit()` now. One boolean from a tap
+on Settings; nobody will feel the difference.
+
+Tied to [light-reports#476] — the phone stopped responding to touches while sending.
+
 ## BrightChat v2.39 — one switch turns every buzz off
 
 **Settings has a Panel section now, with "Buzz on tap" in it.** Turn it off and nothing you

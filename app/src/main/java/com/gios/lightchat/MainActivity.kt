@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +30,7 @@ import com.gios.light.common.hw.LightKeys
 import com.gios.light.common.hw.LocalWheelBus
 import com.gios.light.common.hw.WheelBus
 import com.gios.light.common.report.LightReport
+import com.gios.light.common.report.ReportContext
 import com.gios.light.common.report.ReportOverlay
 import com.gios.lightchat.api.Store
 import com.gios.lightchat.socket.AppForeground
@@ -336,6 +338,26 @@ fun LightChatApp(viewModel: ChatViewModel) {
         val open = state.open ?: return@LaunchedEffect
         tab = tabOf(open, state.contacts, state.favorites)
     }
+
+    // Name the screen for the bug report before drawing it. Every report this app filed said
+    // `home`, because nothing ever wrote the field, so a shake on a thread and a shake on the
+    // dialer read the same. The order is the router's order below, so the name is the branch
+    // that draws. A SideEffect rather than an assignment in each branch: it runs after the
+    // composition commits, and the field is meant to be the last screen that actually drew.
+    val screenName = when {
+        !state.isConfigured -> "setup"
+        state.newsletterEditor != null -> "newsletter-editor"
+        state.newsletterCompose != null -> "newsletter-compose"
+        state.newsletterList -> "newsletters"
+        state.composingNew -> "new-message"
+        state.agentEditor -> "agent-editor"
+        state.openAgent != null -> "agent"
+        showSettings -> "settings"
+        state.open != null -> "thread"
+        tab == ConversationTab.Dial -> "dialer"
+        else -> "list-" + tab.name.lowercase()
+    }
+    SideEffect { ReportContext.screen = screenName }
 
     when {
         !state.isConfigured -> {

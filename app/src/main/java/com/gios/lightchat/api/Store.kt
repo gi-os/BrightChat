@@ -385,7 +385,11 @@ object Store {
         prefs(context).getBoolean(KEY_HAPTICS, true)
 
     fun setHaptics(context: Context, value: Boolean) {
-        prefs(context).edit().putBoolean(KEY_HAPTICS, value).apply()
+        // commit(), not apply(): a report (light-reports#476) had this switch back on after the
+        // phone locked up and the process was lost. An apply() still queued when a process is
+        // killed is a write that never happened, and this is one boolean written from a tap on
+        // Settings — the synchronous write costs nothing anyone will feel.
+        prefs(context).edit().putBoolean(KEY_HAPTICS, value).commit()
     }
 
     /**
