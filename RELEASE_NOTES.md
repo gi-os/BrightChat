@@ -1,3 +1,18 @@
+## BrightChat v2.41 — a failure reports itself
+
+**Every "Couldn’t …" the app puts on screen now also raises the SEND ERROR? chip.** Until
+now the only failures that reached the tracker were the ones somebody was annoyed enough to
+shake the phone about, which is a biased sample of exactly the wrong kind: the quiet ones —
+a photo that would not send, an attachment that would not download, a rename the server
+refused — left a sentence on screen for a moment and nothing anywhere else.
+
+Twelve of those sentences, the send rollback and the general server-error path go through
+one `fail()` now, which writes the sentence to the screen and the same words, with the
+exception's class and message, to light-common's `Trouble`. That is what puts the chip up.
+It is deduped per sentence per hour, so a tunnel that is down asks once rather than on every
+tap. Nothing in the detail is a message body: this app's transport fails with HTTP statuses
+and socket errors.
+
 ## BrightChat v2.40 — a report now says where it came from
 
 **Every bug report this app ever filed said it came from the `home` screen.** The field the

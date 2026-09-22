@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.gios.lightchat.api.AgentApi
 import com.gios.lightchat.api.ApiException
+import com.gios.light.common.report.Trouble
 import com.gios.lightchat.api.BlueBubblesApi
 import com.gios.lightchat.api.Store
 import com.gios.lightchat.api.WhisperApi
@@ -818,7 +819,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // a row that failed to delete, and confirms the ones that succeeded are gone.
             loadConversations()
             // After the reload (which clears `message`), surface any failure.
-            if (failed) _state.update { it.copy(message = "Couldn’t delete the conversation") }
+            if (failed) fail("Couldn’t delete the conversation")
         }
     }
 
@@ -1100,9 +1101,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Drops the optimistic [tempGuid] row after a failed send and surfaces [error]. */
-    private fun rollbackOptimistic(convoGuid: String, tempGuid: String, error: String) {
+    private fun rollbackOptimistic(convoGuid: String, tempGuid: String, error: String, cause: Throwable? = null) {
         updateOpenThread(convoGuid) { list -> list.filterNot { it.guid == tempGuid } }
-        _state.update { it.copy(message = error) }
+        fail(error, cause)
     }
 
     /**
@@ -1126,7 +1127,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             reconcileEcho(convo.guid, tempGuid, sent)
             bumpConversation(convo.guid, sent.previewText, sent.date, fromMe = true)
         } catch (t: Throwable) {
-            rollbackOptimistic(convo.guid, tempGuid, errorMessage)
+            rollbackOptimistic(convo.guid, tempGuid, errorMessage, t)
         }
     }
 
@@ -1211,7 +1212,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val results = convo.guids.map { g -> runCatching { client.renameChat(g, newName) } }
             if (results.none { it.isSuccess }) {
-                _state.update { it.copy(message = "Couldn’t rename") }
+                fail("Couldn’t rename")
                 return@launch
             }
             _state.update { s ->
@@ -1246,7 +1247,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 loadConversations()
             } catch (t: Throwable) {
-                _state.update { it.copy(message = "Couldn’t add — are they on iMessage?") }
+                fail("Couldn’t add — are they on iMessage?", t)
             }
         }
     }
@@ -1270,7 +1271,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 loadConversations()
             } catch (t: Throwable) {
-                _state.update { it.copy(message = "Couldn’t remove them") }
+                fail("Couldn’t remove them", t)
             }
         }
     }
@@ -1286,7 +1287,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val results = convo.guids.map { g -> runCatching { client.leaveChat(g) } }
             if (results.none { it.isSuccess }) {
-                _state.update { it.copy(message = "Couldn’t leave the conversation") }
+                fail("Couldn’t leave the conversation")
                 return@launch
             }
             closeThread()
@@ -1513,7 +1514,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(message = null) }
                 withContext(Dispatchers.Main) { onReady(dest) }
             } catch (t: Throwable) {
-                _state.update { it.copy(message = "Couldn't download attachment") }
+                fail("Couldn't download attachment", t)
             }
         }
     }
@@ -1608,7 +1609,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         .onFailure { _state.update { s -> s.copy(message = "No app can open this file") } }
                 }
             } catch (t: Throwable) {
-                _state.update { it.copy(message = "Couldn’t download attachment") }
+                fail("Couldn’t download attachment", t)
             }
         }
     }
@@ -1657,12 +1658,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val file = Gifs.file(app, gif)
             if (file == null) {
-                _state.update { it.copy(message = "Couldn’t fetch that GIF") }
+                fail("Couldn’t fetch that GIF")
                 return@launch
             }
             val picked = readPickedImage(file)
             if (picked == null) {
-                _state.update { it.copy(message = "Couldn’t fetch that GIF") }
+                fail("Couldn’t fetch that GIF")
                 return@launch
             }
             // Remembered on the send rather than on the tap, so the Recent tab lists what actually
@@ -1694,7 +1695,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun sendPickedFile(convo: Conversation, file: File) {
         val length = runCatching { file.length() }.getOrDefault(0L)
         if (length <= 0L) {
-            _state.update { it.copy(message = "Couldn’t read that video") }
+            fail("Couldn’t read that video")
             return
         }
         if (length > MAX_VIDEO_BYTES) {
@@ -1769,7 +1770,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun readPickedImage(file: File): PickedImage? {
         val bytes = runCatching { file.readBytes() }.getOrNull()
         if (bytes == null || bytes.isEmpty()) {
-            _state.update { it.copy(message = "Couldn’t read that photo") }
+            fail("Couldn’t read that photo")
             return null
         }
         return PickedImage(bytes, mimeForExtension(file.extension), file.name)
@@ -1919,7 +1920,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 runCatching { file.delete() }
             }
             if (sent == 0) {
-                _state.update { it.copy(message = "Couldn’t send that photo") }
+                fail("Couldn’t send that photo")
                 return@launch
             }
             messageCache.remove(guid)
@@ -2802,7 +2803,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             signOutInternal("Password rejected")
             return
         }
+        Trouble.record("reach the server", t)
         _state.update { it.copy(status = Status.Error, message = t.message ?: "Something went wrong") }
+    }
+
+    /**
+     * A failure the person can see, and one the app reports by itself.
+     *
+     * Every "Couldn’t …" sentence used to be a bare `message` write, so the only failures
+     * that ever reached the tracker were the ones somebody was annoyed enough to shake the
+     * phone about — a biased sample of exactly the wrong kind. Now the same sentence goes on
+     * screen and into light-common's [Trouble], which raises the SEND ERROR? chip on its own
+     * (deduped per sentence per hour, so a dead tunnel asks once, not on every tap).
+     *
+     * [what] is the sentence as shown; the report's "could not …" is the same words with the
+     * "Couldn’t" cut off. The detail is the exception's class and message, which for this
+     * app's transport is an HTTP status or a socket error and never a message body.
+     */
+    private fun fail(what: String, cause: Throwable? = null) {
+        val could = what.removePrefix("Couldn’t ").removePrefix("Couldn't ")
+            .substringBefore(" — ")
+            .replaceFirstChar { it.lowercase() }
+        if (cause != null) Trouble.record(could, cause) else Trouble.record(could, null)
+        _state.update { it.copy(message = what) }
     }
 
     fun signOut() = signOutInternal(null)
