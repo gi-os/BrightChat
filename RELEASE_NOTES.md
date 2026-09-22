@@ -1,3 +1,13 @@
+## BrightChat v2.43 — Reply and Edit you can read
+
+**The tapback menu put six glyphs, Reply and Edit on one line, and the words lost.** The glyphs
+alone are most of the message column on this panel, so Reply and Edit were handed a few pixels
+each and wrapped letter by letter — "E / Repld / y i" in the screenshot Bhughes1335 sent an hour
+after v2.42 went out. A word that cannot be read cannot be tapped.
+
+The verbs have their own row now, under the glyphs, in the body size with real space between
+them. Nothing else about the menu moved.
+
 ## BrightChat v2.42 — edit a message you already sent
 
 **Hold one of your own messages and the menu has Edit beside Reply.** The words come into

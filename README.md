@@ -398,6 +398,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.43.x | Reply and Edit on their own row under the tapbacks — on one line they wrapped letter by letter |
 | v2.42.x | Hold your own message → Edit (Private API, 15-minute window); "Edited" under edited turns; a late receipt cannot undo an edit |
 | v2.41.x | Every "Couldn’t …" on screen also raises the SEND ERROR? chip by itself (`fail()` → `Trouble.record`) |
 | v2.40.x | Bug reports name the screen they came from (every one said `home`); "Buzz on tap" is written to disk synchronously so a process kill cannot undo it (light-reports#476) |

@@ -1163,43 +1163,59 @@ private fun ReactionPicker(
     onEdit: (() -> Unit)?,
 ) {
     val haptics = LocalHapticFeedback.current
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(18.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        ReactionType.entries.forEach { type ->
-            Box(
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
+    // Two rows, not one. The six glyphs alone are ~220 dp, and the message column is 80% of a
+    // 3.9-inch panel, so with Reply and Edit on the same line the words were given a few pixels
+    // each and wrapped letter by letter — "E / Repld / y i", per a screenshot from Discord. A word
+    // that cannot be read cannot be tapped either. The verbs sit under the glyphs, in the body
+    // size, with air between them: they are the two things you can do to a message besides
+    // react, and they should read like it.
+    Column(horizontalAlignment = Alignment.Start) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ReactionType.entries.forEach { type ->
+                Box(
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onReact(type)
+                    },
                 ) {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onReact(type)
-                },
-            ) {
-                TapbackGlyph(
-                    type = type,
-                    color = if (type == selected) ChatColors.onSurface else ChatColors.onSurfaceDim,
-                    size = 22.dp,
-                )
+                    TapbackGlyph(
+                        type = type,
+                        color = if (type == selected) ChatColors.onSurface else ChatColors.onSurfaceDim,
+                        size = 22.dp,
+                    )
+                }
             }
         }
-        // Inline reply rides the same menu (both are Private-API sends).
-        HapticText(
-            text = "Reply",
-            style = ChatType.hint,
-            color = ChatColors.onSurfaceVariant,
-            onClick = onReply,
-        )
-        // And so does editing, for the sender's own recent messages — the third thing the
-        // Private API can do to a message that has already gone.
-        if (onEdit != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Inline reply rides the same menu (both are Private-API sends).
             HapticText(
-                text = "Edit",
-                style = ChatType.hint,
+                text = "Reply",
+                style = ChatType.body,
                 color = ChatColors.onSurfaceVariant,
-                onClick = onEdit,
+                maxLines = 1,
+                onClick = onReply,
             )
+            // And so does editing, for the sender's own recent messages — the third thing the
+            // Private API can do to a message that has already gone.
+            if (onEdit != null) {
+                HapticText(
+                    text = "Edit",
+                    style = ChatType.body,
+                    color = ChatColors.onSurfaceVariant,
+                    maxLines = 1,
+                    onClick = onEdit,
+                )
+            }
         }
     }
 }
