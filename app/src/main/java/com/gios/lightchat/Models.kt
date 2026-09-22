@@ -242,6 +242,11 @@ data class ChatMessage(
     // guid IS the tempGuid) instead of rendering a second row. Null for messages we
     // didn't send / weren't sent with a tempGuid.
     val tempGuid: String? = null,
+    // When this message was last edited on the Mac's side (epoch millis, 0 = never).
+    // Ventura and later only; older servers never send the field. Read for the
+    // "Edited" mark under a turn and to keep our own edit from being undone by the
+    // socket echo that follows it — see ChatViewModel.editMessage.
+    val dateEdited: Long = 0,
 ) {
     val images: List<Attachment> get() = attachments.filter { it.isImage }
 

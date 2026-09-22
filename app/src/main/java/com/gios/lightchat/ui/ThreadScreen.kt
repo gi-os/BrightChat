@@ -113,6 +113,9 @@ fun ThreadScreen(viewModel: ChatViewModel) {
     // The message the next send replies to (chosen from the long-press menu),
     // shown as a banner above the compose bar until sent or cancelled.
     var replyingTo by remember(convo.guid) { mutableStateOf<ChatMessage?>(null) }
+    // The sent message whose words are in the compose field being changed. Reply and edit
+    // are exclusive: starting one clears the other, because the field can only mean one thing.
+    var editing by remember(convo.guid) { mutableStateOf<ChatMessage?>(null) }
 
     // The contact page (tap the title): people, the note, the photos and the links, and —
     // for a group — rename / add / remove / leave. Every conversation has one now: a 1:1
@@ -426,7 +429,19 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                             },
                             onReply = {
                                 replyingTo = message
+                                editing = null
                                 reactingTo = null
+                            },
+                            // Only offered on a message this account sent, inside iMessage's
+                            // fifteen-minute window, with words in it. Null hides the label.
+                            onEdit = if (viewModel.canEdit(message)) {
+                                {
+                                    editing = message
+                                    replyingTo = null
+                                    reactingTo = null
+                                }
+                            } else {
+                                null
                             },
                             onDismissPicker = { reactingTo = null },
                         )
@@ -484,11 +499,46 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 }
             }
 
+            // Edit banner: which message the field is rewriting, with a cancel ×. Same shape
+            // as the reply banner above so the two read as one family.
+            editing?.let { target ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Editing “${target.shortDescription}”",
+                        style = ChatType.hint,
+                        color = ChatColors.onSurfaceDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    HapticText(
+                        text = "×",
+                        style = ChatType.body,
+                        color = ChatColors.onSurfaceDim,
+                        onClick = { editing = null },
+                    )
+                }
+            }
+
             ComposeBar(
                 onSend = { text ->
-                    viewModel.sendMessage(text, replyingTo?.guid)
-                    replyingTo = null
+                    val target = editing
+                    if (target != null) {
+                        viewModel.editMessage(target, text)
+                        editing = null
+                    } else {
+                        viewModel.sendMessage(text, replyingTo?.guid)
+                        replyingTo = null
+                    }
                 },
+                // The message's words go into the field when an edit starts, and the field is
+                // emptied when it is cancelled — keyed on the guid so a second Edit on the same
+                // message after a cancel refills it.
+                prefill = editing?.let { it.guid to (it.bodyText ?: "") },
+                sendLabel = if (editing != null) "Save" else "Send",
                 onPickImage = { picking = true },
                 onPickGif = { pickingGif = true },
                 // A GIF or a photograph handed over by the keyboard, or pasted, goes the same way
@@ -640,11 +690,23 @@ fun ComposeBar(
      */
     onDictate: ((onWords: (String) -> Unit) -> Unit)? = null,
     dictating: Boolean = false,
+    /**
+     * Words to put in the field, keyed: `(key, text)`. A new key replaces the field's contents
+     * with the text and puts the cursor at the end; the key going back to null clears the
+     * field. For editing a sent message — the field has to open holding the words being
+     * changed, and a cancelled edit must not leave them behind as a draft of a new message.
+     */
+    prefill: Pair<String, String>? = null,
+    /** What the action on the right says. "Send", or "Save" while editing. */
+    sendLabel: String = "Send",
 ) {
     // A TextFieldState rather than a String, because `Modifier.contentReceiver` only works on the
     // state-based BasicTextField — and receiving an image is the whole reason this field exists on
     // a messaging app. Everything else about it is unchanged.
     val state = rememberTextFieldState()
+    LaunchedEffect(prefill?.first) {
+        if (prefill != null) state.setTextAndPlaceCursorAtEnd(prefill.second) else state.clearText()
+    }
     val context = LocalContext.current
     // Only blankness is read in composition, not the text itself. Reading the text would recompose
     // the whole bar — and rebuild the content receiver — on every keystroke, which is the cost the
@@ -733,7 +795,7 @@ fun ComposeBar(
             }
             Spacer(modifier = Modifier.width(16.dp))
             HapticText(
-                text = "Send",
+                text = sendLabel,
                 style = ChatType.body,
                 color = if (blank) ChatColors.onSurfaceDisabled else ChatColors.onSurface,
                 onClick = {
@@ -836,6 +898,8 @@ private fun MessageRow(
     onLongPress: () -> Unit,
     onReact: (ReactionType) -> Unit,
     onReply: () -> Unit,
+    /** Null when this message cannot be edited from here; the menu then shows no Edit. */
+    onEdit: (() -> Unit)? = null,
     onDismissPicker: () -> Unit,
 ) {
     // A group-system row (rename, member change) is an event line, not a turn —
@@ -911,7 +975,7 @@ private fun MessageRow(
         // keep the same cap whether or not there's a reaction.
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             if (message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
-            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, onSaveAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH))
+            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, onSaveAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onEdit, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH))
             if (!message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
         }
         // "Not delivered" on any sent message the Mac later failed to deliver
@@ -920,13 +984,18 @@ private fun MessageRow(
         if (message.fromMe && message.error != 0) {
             Spacer(modifier = Modifier.height(2.dp))
             Text(text = "Not delivered", style = ChatType.hint, color = ChatColors.onSurface)
-        } else if (showReceipt) {
+        } else {
             // The delivery receipt under your newest sent message — nothing until
             // the server reports it delivered, then "Read <when>" once read. Live
             // updates arrive as updated-message socket events through the merge.
-            receiptText(message)?.let { line ->
+            // "Edited" rides the same line, on any message that was, in either
+            // direction: the words on screen are not the words that were first sent,
+            // and Messages says so too.
+            val receipt = if (showReceipt) receiptText(message) else null
+            val edited = if (message.dateEdited > 0) "Edited" else null
+            listOfNotNull(receipt, edited).takeIf { it.isNotEmpty() }?.let { parts ->
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(text = line, style = ChatType.hint, color = ChatColors.onSurfaceDisabled)
+                Text(text = parts.joinToString(" · "), style = ChatType.hint, color = ChatColors.onSurfaceDisabled)
             }
         }
     }
@@ -1001,6 +1070,7 @@ private fun MessageContent(
     onLongPress: () -> Unit,
     onReact: (ReactionType) -> Unit,
     onReply: () -> Unit,
+    onEdit: (() -> Unit)?,
     onDismissPicker: () -> Unit,
     modifier: Modifier,
 ) {
@@ -1027,6 +1097,7 @@ private fun MessageContent(
                 selected = message.reactions.firstOrNull { it.fromMe }?.type,
                 onReact = onReact,
                 onReply = onReply,
+                onEdit = onEdit,
             )
             Spacer(modifier = Modifier.height(6.dp))
         }
@@ -1085,7 +1156,12 @@ private fun linkify(text: String): AnnotatedString {
 /** The six tapbacks as a row of the drawn glyphs; the user's current one (if any)
  *  shows bright so re-tapping it reads as "remove". */
 @Composable
-private fun ReactionPicker(selected: ReactionType?, onReact: (ReactionType) -> Unit, onReply: () -> Unit) {
+private fun ReactionPicker(
+    selected: ReactionType?,
+    onReact: (ReactionType) -> Unit,
+    onReply: () -> Unit,
+    onEdit: (() -> Unit)?,
+) {
     val haptics = LocalHapticFeedback.current
     Row(
         horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -1115,6 +1191,16 @@ private fun ReactionPicker(selected: ReactionType?, onReact: (ReactionType) -> U
             color = ChatColors.onSurfaceVariant,
             onClick = onReply,
         )
+        // And so does editing, for the sender's own recent messages — the third thing the
+        // Private API can do to a message that has already gone.
+        if (onEdit != null) {
+            HapticText(
+                text = "Edit",
+                style = ChatType.hint,
+                color = ChatColors.onSurfaceVariant,
+                onClick = onEdit,
+            )
+        }
     }
 }
 

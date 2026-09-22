@@ -16,6 +16,7 @@ class ThreadMergeTest {
         date: Long = 1_000L,
         tempGuid: String? = null,
         dateDelivered: Long = 0L,
+        dateEdited: Long = 0L,
     ) = ChatMessage(
         guid = guid,
         text = text,
@@ -24,7 +25,26 @@ class ThreadMergeTest {
         sender = null,
         tempGuid = tempGuid,
         dateDelivered = dateDelivered,
+        dateEdited = dateEdited,
     )
+
+    @Test
+    fun `a receipt that predates an edit keeps the edited words`() {
+        val edited = listOf(message("g1", text = "see you at 7", dateEdited = 5_000L))
+        val lateReceipt = message("g1", text = "see you at 6", dateDelivered = 6_000L)
+        val out = mergeIntoThread(edited, lateReceipt)
+        assertEquals(1, out.size)
+        assertEquals("see you at 7", out[0].text)
+        assertEquals(5_000L, out[0].dateEdited)
+        assertEquals(6_000L, out[0].dateDelivered)
+    }
+
+    @Test
+    fun `a newer edit from the Mac replaces the words`() {
+        val edited = listOf(message("g1", text = "see you at 7", dateEdited = 5_000L))
+        val again = message("g1", text = "see you at 8", dateEdited = 9_000L)
+        assertEquals("see you at 8", mergeIntoThread(edited, again)[0].text)
+    }
 
     @Test
     fun `an unseen message is appended`() {

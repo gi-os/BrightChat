@@ -1,3 +1,22 @@
+## BrightChat v2.42 — edit a message you already sent
+
+**Hold one of your own messages and the menu has Edit beside Reply.** The words come into
+the compose field, the button reads Save, and the row shows the new text the moment you press
+it — put back if the Mac refuses. iMessage allows edits for fifteen minutes after sending, so
+the option appears only inside that window, only on your messages, and only on ones with
+words in them; a photo has nothing to edit. Like tapbacks and replies it needs the server's
+Private API, and the Mac has to be on Ventura or later, which is where Apple added editing.
+
+"Edited" appears under a turn that was, yours or theirs, on the same line as the receipt.
+
+One thing had to be right underneath. After an edit the message arrives again several times —
+the edit's own echo, then a delivery stamp, then a read stamp — and a stamp serialized before
+the edit reached the database carries the old words. The thread merge used to take such a row
+whole, which would flip the text back. Now a row's words and edit stamp only move forward:
+an update that knows nothing of an edit cannot undo one. Two tests in `ThreadMergeTest`.
+
+Asked for on Discord by Bhughes1335.
+
 ## BrightChat v2.41 — a failure reports itself
 
 **Every "Couldn’t …" the app puts on screen now also raises the SEND ERROR? chip.** Until

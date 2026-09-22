@@ -429,6 +429,27 @@ class BlueBubblesApi(private val baseUrl: String, private val password: String) 
     }
 
     /**
+     * `POST /api/v1/message/:guid/edit` — changes the text of a message this account sent.
+     *
+     * Private-API only, and the Mac has to be on Ventura or later; the server resolves
+     * the chat from the message, so no chat guid travels. `backwardsCompatibilityMessage`
+     * is what a device too old to understand edits sees as a fresh message — the edited
+     * text itself, which is what Messages does. `partIndex` 0: this app never sends a
+     * multipart message. Returns the message as it stands after the edit, `dateEdited`
+     * set and `text` already the new words, so the caller can put the server's version of
+     * the row in place of its optimistic one.
+     */
+    fun edit(messageGuid: String, text: String, partIndex: Int = 0): ChatMessage {
+        val body = JSONObject()
+            .put("editedMessage", text)
+            .put("backwardsCompatibilityMessage", text)
+            .put("partIndex", partIndex)
+        val resp = requestChecked("POST", "/api/v1/message/${enc(messageGuid)}/edit", body, what = "edit")
+        return dataObject(resp)?.let { parseMessage(it) }
+            ?: throw IOException("edit: no message returned")
+    }
+
+    /**
      * `POST /api/v1/message/react` — sends a tapback onto [selectedMessageGuid].
      * Private-API only (gated in the UI on [serverInfo]); [reaction] is a
      * [ReactionType.apiValue], prefixed `-` to remove. [partIndex] is 0 for a
@@ -920,6 +941,8 @@ class BlueBubblesApi(private val baseUrl: String, private val password: String) 
                 associatedMessageGuid = o.optString("associatedMessageGuid").takeIf { it.isNotBlank() },
                 associatedMessageType = o.optString("associatedMessageType").takeIf { it.isNotBlank() && it != "null" },
                 tempGuid = o.optString("tempGuid").takeIf { it.isNotBlank() && it != "null" },
+                // Explicit JSON null on an unedited message; optLong treats it as absent.
+                dateEdited = o.optLong("dateEdited", 0L),
             )
         }
 

@@ -68,7 +68,14 @@ internal fun mergeIntoThread(list: List<ChatMessage>, incoming: ChatMessage): Li
         when {
             // The message's place in the thread is where it already sits — writing it
             // here rather than appending keeps a send from jumping to the bottom twice.
-            i == idx -> out.add(incoming)
+            //
+            // **An update that does not know about an edit must not undo it.** After an
+            // edit the message arrives several more times — the edit's own echo, then a
+            // delivery stamp, then a read stamp — and a server or a path that serialized
+            // one of them before the edit landed in chat.db carries the old words with no
+            // `dateEdited`. Taking that row whole would flip the text back for a frame or
+            // for good. So the words and the edit stamp only move forward.
+            i == idx -> out.add(keepNewerEdit(existing, incoming))
             // The same message under a second row: the echo that arrived while the
             // optimistic copy was still up. It is the one being written above.
             existing.guid == incoming.guid -> Unit
@@ -77,3 +84,15 @@ internal fun mergeIntoThread(list: List<ChatMessage>, incoming: ChatMessage): Li
     }
     return out
 }
+
+/**
+ * [incoming] with [existing]'s text and `dateEdited` kept when the existing row is the more
+ * recently edited of the two. Everything else — receipts, error, reactions folded later —
+ * is the update's to set.
+ */
+internal fun keepNewerEdit(existing: ChatMessage, incoming: ChatMessage): ChatMessage =
+    if (existing.dateEdited > incoming.dateEdited) {
+        incoming.copy(text = existing.text, dateEdited = existing.dateEdited)
+    } else {
+        incoming
+    }

@@ -24,6 +24,7 @@ import com.gios.lightchat.socket.SocketService
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -110,6 +111,9 @@ data class UiState(
  * [SocketService]) and folds new/updated messages into the list and open thread.
  * Ordering is enforced here — conversations by last activity, messages by date.
  */
+/** iMessage lets a message be edited for fifteen minutes after it was sent. */
+private const val EDIT_WINDOW_MS = 15L * 60L * 1_000L
+
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application
@@ -1153,6 +1157,81 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             performSend(convo, tempGuid, "Couldn’t send") { client, g, method ->
                 client.send(g, body, tempGuid, method, reply)
             }
+        }
+    }
+
+    // ---- Editing ----------------------------------------------------------
+
+    /**
+     * Whether [message] can still be edited from here.
+     *
+     * Mine, real (a `temp-` guid has nothing on the server to edit yet), with words in it
+     * (an attachment-only message has no text to change), and inside iMessage's own window
+     * — fifteen minutes from sending, after which Messages itself greys the option out and
+     * the server would refuse. Private API is the caller's gate, same as tapbacks.
+     */
+    fun canEdit(message: ChatMessage): Boolean =
+        message.fromMe &&
+            !message.guid.startsWith("temp-") &&
+            message.bodyText != null &&
+            !message.isGroupEvent &&
+            System.currentTimeMillis() - message.date < EDIT_WINDOW_MS
+
+    /**
+     * Changes the words of a sent message.
+     *
+     * Optimistic like a send: the row shows the new text at once and is put back if the
+     * server refuses. The server's answer replaces the row's text and `dateEdited`, and
+     * nothing else — the row keeps its reactions, receipts and reply link, which the echo
+     * may not carry. The list preview follows only when this was the newest thing said.
+     */
+    fun editMessage(target: ChatMessage, newText: String) {
+        val body = newText.trim()
+        val convo = _state.value.open ?: return
+        if (!_state.value.privateApi || !canEdit(target)) return
+        if (body.isEmpty() || body == target.text) return
+        val client = api ?: return
+        val before = target.text
+        val stamp = System.currentTimeMillis()
+        updateOpenThread(convo.guid) { list ->
+            list.map { if (it.guid == target.guid) it.copy(text = body, dateEdited = stamp) else it }
+        }
+        previewEdited(convo, target, body)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val edited = client.edit(target.guid, body)
+                updateOpenThread(convo.guid) { list ->
+                    list.map {
+                        if (it.guid == target.guid) {
+                            it.copy(
+                                text = edited.text.ifBlank { body },
+                                dateEdited = if (edited.dateEdited > 0) edited.dateEdited else stamp,
+                            )
+                        } else {
+                            it
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                updateOpenThread(convo.guid) { list ->
+                    list.map { if (it.guid == target.guid) it.copy(text = before, dateEdited = target.dateEdited) else it }
+                }
+                previewEdited(convo, target, before)
+                fail("Couldn’t edit that message", t)
+            }
+        }
+    }
+
+    /** The conversation row's preview, when the edited message is the one it shows. */
+    private fun previewEdited(convo: Conversation, target: ChatMessage, text: String) {
+        _state.update { s ->
+            s.copy(
+                conversations = s.conversations.map { c ->
+                    if (convo.guid in c.guids && c.lastDate == target.date && c.lastFromMe) c.copy(lastText = text) else c
+                },
+            )
         }
     }
 
