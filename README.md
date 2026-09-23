@@ -156,8 +156,16 @@ appear in the same list as iMessage. Each row names its network.
 In a Beeper chat you can send text, photos, videos and files, reply, react, edit your own
 messages, and rename or leave a group. These work whether or not the Mac's Private API is on.
 
-Not yet in this release: notifications for Beeper messages, emoji verification with another
-device, emoji reactions outside the six tapbacks, and adding people to a bridged group. The
+**Notifications.** A Beeper message alerts the same way an iMessage does: a notification, a
+buzz, and the on-screen box. Your Beeper mute and mention settings apply, and an alert goes away
+when you read the chat on another device. While the phone sleeps, Beeper sends a wake-up
+(room and message IDs only, no text) through [ntfy](https://ntfy.sh) to a random topic for
+this phone. BrightChat then syncs once and decrypts the message on the phone. To use your own
+ntfy server, tap **Change push server** under Beeper. The server needs a public HTTPS address
+and `base-url` set; ntfy's Matrix gateway is on by default.
+
+Not yet in this release: emoji verification with another device, emoji reactions outside the
+six tapbacks, and adding people to a bridged group. The
 **Show log** line under the Beeper settings shows what the connection did; include it in a bug
 report.
 
@@ -447,6 +455,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.47.x (nightly) | **Beeper notifications**: alerts for WhatsApp, Signal and the rest, following your Beeper mute settings, with an ntfy wake-up while the phone sleeps. Beeper works with no Mac set up at all |
 | v2.46.x (nightly) | Dial tab: **Voicemail** in the corner rings your carrier voicemail; the keypad folds away until you tap **Keypad** |
 | v2.45.x (nightly) | **People** (Beeper on only): one row per person across iMessage and Beeper networks, a thread with All · iMessage · WhatsApp · Calls, "on WhatsApp" dividers, a "via" line choosing where the next message goes, call history (phone calls and bridge call notices), and Link / Unlink on the contact page. Beeper failures send a redacted log report by themselves |
 | v2.44.x (nightly) | **Beeper (beta)**: WhatsApp, Signal, Telegram, Instagram and the rest beside iMessage, in the same list and thread. Sign in from Settings or the first-run screen. Nightly channel: a push is a prerelease, `[release]` makes it official |
@@ -461,7 +470,8 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 
 The Beeper login flow, the `/keys/claim` repair and the recovery-key verification are adapted
 from [fenleon/chats](https://github.com/fenleon/chats) and
-[Beeper4LightOS](https://github.com/ironfeet/Beeper4LightOS), both MIT. Matrix is
+[Beeper4LightOS](https://github.com/ironfeet/Beeper4LightOS), both MIT, as is the ntfy
+push pattern (from fenleon/chats). Matrix is
 [Trixnity](https://gitlab.com/connect2x/trixnity) (Apache-2.0).
 
 ---

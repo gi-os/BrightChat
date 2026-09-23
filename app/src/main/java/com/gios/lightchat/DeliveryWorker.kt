@@ -41,7 +41,9 @@ class DeliveryWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     override suspend fun doWork(): Result {
         val app = applicationContext
-        if (!Store.hasPassword(app) || Store.baseUrl(app) == null) return Result.success()
+        if ((!Store.hasPassword(app) || Store.baseUrl(app) == null) &&
+            !com.gios.lightchat.beeper.BeeperEngine.hasSession(app)
+        ) return Result.success()
 
         // First, because it's the layer that actually delivers on time and the one most
         // likely to have gone missing.

@@ -72,13 +72,30 @@ object CatchUp {
      *   uses it to decide how soon to try again, and "nothing new" is a success.
      */
     fun run(context: Context): Boolean {
-        if (!running.compareAndSet(false, true)) return true
-        return try {
-            runLocked(context)
+        // Beeper in parallel: its sync runs on its own scope while the sweep below does its REST
+        // calls, and both have to fit the same Doze network window. Waited on at the end, within
+        // a budget of its own. See BeeperEngine.catchUpAsync.
+        val beeper = runCatching { com.gios.lightchat.beeper.BeeperEngine.catchUpAsync(context) }.getOrNull()
+        try {
+            if (!running.compareAndSet(false, true)) return true
+            return try {
+                runLocked(context)
+            } finally {
+                running.set(false)
+            }
         } finally {
-            running.set(false)
+            if (beeper != null) {
+                runCatching {
+                    kotlinx.coroutines.runBlocking {
+                        kotlinx.coroutines.withTimeoutOrNull(BEEPER_WAIT_MS) { beeper.join() }
+                    }
+                }
+            }
         }
     }
+
+    /** How long the poll waits for Beeper's sync before letting the broadcast go. */
+    private const val BEEPER_WAIT_MS = 8_000L
 
     private fun runLocked(context: Context): Boolean {
         val app = context.applicationContext

@@ -198,14 +198,17 @@ class SocketService : Service() {
     }
 
     private fun connect() {
-        val password = Store.password(this) ?: run { stopSelf(); return }
-        val baseUrl = Store.baseUrl(this) ?: run { stopSelf(); return }
+        // Beeper alone keeps the service up with no socket: its sync, push stream and alarm live
+        // in this process too.
+        val beeperOnly = com.gios.lightchat.beeper.BeeperEngine.hasSession(this)
+        val password = Store.password(this) ?: run { if (!beeperOnly) stopSelf(); return }
+        val baseUrl = Store.baseUrl(this) ?: run { if (!beeperOnly) stopSelf(); return }
         val opts = IO.Options().apply {
             transports = arrayOf("websocket") // server upgrades to ws anyway; skip polling
             query = "password=" + URLEncoder.encode(password, "UTF-8")
             reconnection = true
         }
-        val s = runCatching { IO.socket(baseUrl, opts) }.getOrNull() ?: run { stopSelf(); return }
+        val s = runCatching { IO.socket(baseUrl, opts) }.getOrNull() ?: run { if (!beeperOnly) stopSelf(); return }
         socket = s
         s.on(Socket.EVENT_CONNECT, Emitter.Listener {
             Log.d(TAG, "socket connected")

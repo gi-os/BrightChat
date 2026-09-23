@@ -423,6 +423,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * whenever it says they changed, and marks the app configured the first time a Beeper account
      * signs in on a phone with no Mac set up.
      */
+    private var beeperServiceStarted = false
+
     private fun observeBeeper() {
         viewModelScope.launch {
             BeeperEngine.changes.collect { reloadBeeperRows() }
@@ -431,6 +433,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             BeeperEngine.status.collect { status ->
                 val on = status !is BeeperEngine.Status.SignedOut && BeeperEngine.hasSession(app)
                 if (on != _state.value.beeperOn) _state.update { it.copy(beeperOn = on) }
+                // Beeper-only phones need the service too: it holds the sync, the push stream and
+                // the poll alarm. Idempotent, so every Ready is fine.
+                if (on && status is BeeperEngine.Status.Ready && !beeperServiceStarted) {
+                    beeperServiceStarted = true
+                    startSocket()
+                }
                 if (status is BeeperEngine.Status.Ready && !_state.value.isConfigured) {
                     _state.update { it.copy(isConfigured = true, status = Status.Ready) }
                     reloadBeeperRows()
@@ -3356,6 +3364,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         sync = null
         stopSocket()
         Store.signOut(app)
+        // Still signed in to Beeper: the service goes on without the socket.
+        if (BeeperEngine.hasSession(app)) startSocket()
         clearStore()
         messageCache.clear()
         // The store was shared: Beeper's rows went with it, so have Beeper write them again.

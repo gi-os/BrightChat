@@ -19,7 +19,9 @@ import com.gios.lightchat.api.Store
 class PackageReplacedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
-        if (!Store.hasPassword(context) || Store.baseUrl(context) == null) return
+        if ((!Store.hasPassword(context) || Store.baseUrl(context) == null) &&
+            !com.gios.lightchat.beeper.BeeperEngine.hasSession(context)
+        ) return
         PollAlarm.schedule(context)
         DeliveryWorker.ensure(context)
         runCatching { context.startForegroundService(Intent(context, SocketService::class.java)) }

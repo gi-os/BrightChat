@@ -17,7 +17,9 @@ import com.gios.lightchat.api.Store
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        if (!Store.hasPassword(context) || Store.baseUrl(context) == null) return
+        if ((!Store.hasPassword(context) || Store.baseUrl(context) == null) &&
+            !com.gios.lightchat.beeper.BeeperEngine.hasSession(context)
+        ) return
         context.startForegroundService(Intent(context, SocketService::class.java))
         // The service may not survive; the alarm chain has to be re-armed either way,
         // since alarms don't survive a reboot.

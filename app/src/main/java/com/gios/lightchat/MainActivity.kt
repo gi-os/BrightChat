@@ -226,7 +226,10 @@ class MainActivity : ComponentActivity() {
         // and without moving it here the next background poll would find the same messages
         // still unread — on a server with no Private API nothing ever marks them read — and
         // post and buzz for them a second time.
-        val newest = held.maxOf { it.date }
+        // iMessage's watermark only: a Beeper date moving it could step over an iMessage the
+        // socket missed.
+        val newest = held.filterNot { com.gios.lightchat.beeper.BeeperMapping.isBeeper(it.chatGuid) }
+            .maxOfOrNull { it.date } ?: return
         Store.setLastAlertedAt(this, maxOf(Store.lastAlertedAt(this), newest))
     }
 

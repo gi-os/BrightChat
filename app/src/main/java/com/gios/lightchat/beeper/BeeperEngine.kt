@@ -23,6 +23,7 @@ import de.connect2x.trixnity.client.key.KeySecretService
 import de.connect2x.trixnity.client.key.KeyTrustService
 import de.connect2x.trixnity.client.media
 import de.connect2x.trixnity.client.media.okio.okio
+import de.connect2x.trixnity.client.notification
 import de.connect2x.trixnity.client.room
 import de.connect2x.trixnity.client.room.GetTimelineEventsConfig
 import de.connect2x.trixnity.client.room.message.file
@@ -125,8 +126,8 @@ import kotlin.time.Duration.Companion.seconds
  *
  * ### What is not here yet
  *
- * Alerts (Phase 4: push through our own gateway), emoji verification with another device, the
- * full emoji set for reactions, and adding people to a bridged group.
+ * Emoji verification with another device, the full emoji set for reactions, and adding people to
+ * a bridged group. Alerts are [BeeperAlerts]; the wake-up while asleep is [BeeperPush].
  */
 object BeeperEngine {
 
@@ -254,12 +255,18 @@ object BeeperEngine {
             launch { watchRooms(c) }
             launch { watchTimeline(c) }
             launch { watchTyping(c) }
+            appContext?.let { ctx ->
+                launch { BeeperAlerts.watch(ctx, c) }
+                BeeperPush.start(ctx, c) { roomId, eventId -> onPush(c, roomId, eventId) }
+            }
         }
         note("signed in as ${c.userId.full} on ${c.deviceId}")
     }
 
     private fun configuration(): MatrixClientConfiguration.() -> Unit = {
         name = "brightchat-beeper"
+        // Trixnity evaluates the account's push rules and hands [BeeperAlerts] what to raise.
+        enableExternalNotifications = true
         httpClientEngine = engine
         // Room "last relevant event" is real speech only: an edit or a reaction must not become
         // what the list row says.
@@ -393,6 +400,9 @@ object BeeperEngine {
         val ctx = appContext ?: return
         lifecycle.withLock {
             observers?.cancel()
+            client?.let { c -> withTimeoutOrNull(5_000) { BeeperPush.unregister(ctx, c) } }
+            BeeperPush.forget(ctx)
+            BeeperAlerts.forget(ctx)
             client?.let { c ->
                 runCatching { c.logout() }
                 runCatching { c.closeSuspending() }
@@ -408,6 +418,10 @@ object BeeperEngine {
             note("signed out")
         }
         _changes.tryEmit(Unit)
+        // The service was only running for Beeper: with no Mac set up, nothing is left for it.
+        if (!com.gios.lightchat.api.Store.hasPassword(ctx) || com.gios.lightchat.api.Store.baseUrl(ctx) == null) {
+            runCatching { ctx.stopService(android.content.Intent(ctx, com.gios.lightchat.socket.SocketService::class.java)) }
+        }
     }
 
     private fun beeperPost(path: String, body: String): JSONObject {
@@ -438,6 +452,7 @@ object BeeperEngine {
 
     private suspend fun watchStatus(c: MatrixClient) {
         c.syncState.collectLatest { sync ->
+            if (sync.name.equals("RUNNING", ignoreCase = true)) lastSyncAt = android.os.SystemClock.elapsedRealtime()
             if (sync.name.equals("ERROR", ignoreCase = true)) {
                 note("sync is failing")
                 autoReport("keep syncing", null)
@@ -573,6 +588,87 @@ object BeeperEngine {
                 raw = row.json,
             ),
         )
+    }
+
+    // ------------------------------------------------------------------ alerts and wake-ups
+
+    /** Elapsed-realtime of the last finished sync. Counts deep sleep, which is the point. */
+    @Volatile private var lastSyncAt = 0L
+
+    /** A healthy loop finishes a long poll every 30 s; well past that, it is wedged or asleep. */
+    private const val SYNC_STALE_MS = 75_000L
+
+    /** How long a poll-alarm wake may spend on Beeper inside the Doze network window. */
+    private const val CATCH_UP_BUDGET_MS = 8_000L
+
+    /** The stored-message row for an alert, as the thread would show it. */
+    internal suspend fun alertRow(c: MatrixClient, te: TimelineEvent): MessageStore.Row? = rowFor(c, te)
+
+    /** The list row for a room: the one last written, else built now. */
+    internal suspend fun conversationOf(c: MatrixClient, roomId: RoomId): Conversation? =
+        rowCache[roomId.full]?.second ?: runCatching {
+            withTimeoutOrNull(3_000) { c.room.getById(roomId).filterNotNull().firstOrNull() }?.let { conversationFor(c, it) }
+        }.getOrNull()
+
+    private suspend fun onPush(c: MatrixClient, roomId: String?, eventId: String?) {
+        // Trixnity already holds the event: the live sync got there first, nothing to do.
+        if (roomId != null) {
+            val handled = runCatching {
+                c.notification.onPush(RoomId(roomId), eventId?.let { EventId(it) })
+            }.getOrDefault(false)
+            if (handled) return
+        }
+        wake(c, "push")
+    }
+
+    /**
+     * One sync now. A sync-once request interrupts the loop's long poll and sends a fresh one, so
+     * this also repairs a loop stuck on a socket that died while the phone slept. Trixnity turns
+     * what arrives into alerts through [BeeperAlerts] as usual.
+     */
+    private suspend fun wake(c: MatrixClient, reason: String) {
+        val stale = android.os.SystemClock.elapsedRealtime() - lastSyncAt > SYNC_STALE_MS
+        if (!stale && reason == "poll") return
+        val ok = withTimeoutOrNull(CATCH_UP_BUDGET_MS) { c.syncOnce(Presence.OFFLINE).isSuccess } ?: false
+        if (!ok) note("wake ($reason): sync didn’t finish")
+        val state = c.syncState.value.name
+        if (state.equals("STOPPED", true) || state.equals("ERROR", true)) {
+            runCatching { c.startSync(Presence.OFFLINE) }
+        }
+    }
+
+    /**
+     * The poll alarm's Beeper half: restore the session if the process was restarted, then sync
+     * once if the loop looks asleep. Returns the job so the caller can wait on it inside its own
+     * budget; null without a Beeper account.
+     */
+    fun catchUpAsync(context: Context): Job? {
+        if (!hasSession(context)) return null
+        appContext = context.applicationContext
+        return scope.launch {
+            val c = runCatching { ensureClient() }.getOrNull() ?: return@launch
+            wake(c, "poll")
+        }
+    }
+
+    /** One line for Settings: whether push is live and when it last fired. */
+    fun pushLine(context: Context): String {
+        val host = runCatching { URL(BeeperPush.server(context)).host }.getOrDefault("ntfy")
+        val state = if (BeeperPush.connected) "connected" else "not connected"
+        val last = BeeperPush.lastPushAt.takeIf { it > 0L }?.let { at ->
+            val min = (System.currentTimeMillis() - at) / 60_000
+            if (min < 1) " · last push just now" else " · last push ${min}m ago"
+        }.orEmpty()
+        return "Push via $host: $state$last"
+    }
+
+    suspend fun setPushServer(context: Context, raw: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val server = BeeperPush.normalizeServer(raw) ?: throw IllegalArgumentException("That isn’t a web address.")
+            BeeperPush.changeServer(context, client, server) { roomId, eventId ->
+                client?.let { onPush(it, roomId, eventId) }
+            }
+        }
     }
 
     // ------------------------------------------------------------------ rooms → rows

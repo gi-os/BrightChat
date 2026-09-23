@@ -25,6 +25,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.gios.lightchat.beeper.BeeperEngine
+import com.gios.lightchat.beeper.BeeperPush
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
 import com.gios.lightchat.ui.theme.ChatColors
 import com.gios.lightchat.ui.theme.ChatType
 import kotlinx.coroutines.launch
@@ -100,6 +104,7 @@ fun BeeperSection() {
                 } else {
                     Line("Verified")
                 }
+                PushRows(act = { block -> run(block) })
                 Spacer(modifier = Modifier.height(18.dp))
                 HapticText(
                     text = "Sign out of Beeper",
@@ -131,6 +136,53 @@ fun BeeperSection() {
                 color = ChatColors.onSurfaceDisabled,
                 textAlign = TextAlign.Start,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Push status and the server it goes through. ntfy.sh by default; a self-hosted ntfy is one line
+ * to type. Re-read every few seconds, since the stream's state changes with no event the UI hears.
+ */
+@Composable
+private fun PushRows(act: (suspend () -> Result<Unit>) -> Unit) {
+    val context = LocalContext.current
+    var line by remember { mutableStateOf(BeeperEngine.pushLine(context)) }
+    var editing by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            line = BeeperEngine.pushLine(context)
+            delay(5_000)
+        }
+    }
+    Spacer(modifier = Modifier.height(12.dp))
+    Line(line)
+    HapticText(
+        text = if (editing) "Cancel" else "Change push server",
+        style = ChatType.hint,
+        color = ChatColors.onSurfaceDisabled,
+        onClick = { editing = !editing },
+    )
+    if (editing) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Field(
+            hint = "ntfy server, e.g. push.example.com",
+            keyboard = KeyboardType.Uri,
+            onDone = { server ->
+                editing = false
+                act { BeeperEngine.setPushServer(context, server) }
+            },
+        )
+        if (BeeperPush.server(context) != BeeperPush.DEFAULT_SERVER) {
+            HapticText(
+                text = "Use ntfy.sh",
+                style = ChatType.hint,
+                color = ChatColors.onSurfaceDisabled,
+                onClick = {
+                    editing = false
+                    act { BeeperEngine.setPushServer(context, BeeperPush.DEFAULT_SERVER) }
+                },
             )
         }
     }
