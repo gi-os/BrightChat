@@ -97,7 +97,7 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
     // Rename / add / remove / leave are group verbs, and the server gates them on the
     // Private API. Both halves matter now that this screen also opens for a 1:1: without
     // the isGroup half a two-person chat would offer to be renamed and left.
-    val canManage = state.privateApi && convo.isGroup
+    val canManage = viewModel.caps(convo).groupRename && convo.isGroup
 
     // Reading the store and extracting every URL in it happens here, not when the thread
     // opens: this is the only screen that wants it.
@@ -335,7 +335,7 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                         },
                         // A group of two is one departure from being a 1:1, and the server
                         // will not remove the last other person anyway.
-                        canRemove = canManage && people.size > 2,
+                        canRemove = canManage && viewModel.caps(convo).groupMembers && people.size > 2,
                         confirming = confirming == address,
                         onRemove = {
                             if (confirming == address) {
@@ -347,7 +347,7 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                         },
                     )
                 }
-                if (canManage) {
+                if (canManage && viewModel.caps(convo).groupMembers) {
                     item(key = "add-member") {
                         if (addingTo) {
                             AddMemberField(
@@ -551,7 +551,7 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                 // There is deliberately no local-only "clear": the store is a cache of
                 // the Mac's Messages, so emptying it here would refill on the next sync
                 // and read as the delete having failed.
-                if (state.privateApi) {
+                if (viewModel.caps(convo).deleteChat) {
                     item(key = "delete") {
                         HapticText(
                             text = if (confirming == DELETE) {

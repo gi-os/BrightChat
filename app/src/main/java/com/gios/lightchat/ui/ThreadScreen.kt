@@ -420,9 +420,11 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                                 }
                             },
                             onSaveAttachment = { viewModel.saveAttachment(it) },
-                            canReact = state.privateApi,
+                            // What this chat's backend allows, not whether the Mac's helper is up: a
+                            // WhatsApp chat takes tapbacks either way. See backend/ChatBackend.
+                            canReact = viewModel.caps(convo).reactions,
                             pickerOpen = reactingTo == message.guid,
-                            onLongPress = { if (state.privateApi) reactingTo = message.guid },
+                            onLongPress = { if (viewModel.caps(convo).reactions) reactingTo = message.guid },
                             onReact = { type ->
                                 viewModel.sendReaction(message, type)
                                 reactingTo = null

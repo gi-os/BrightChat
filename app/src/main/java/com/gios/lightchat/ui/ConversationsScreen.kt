@@ -163,8 +163,10 @@ fun ConversationsScreen(
                 items(visible, key = { it.guid }) { convo ->
                     // A tapback as the newest activity shows as "Liz loved an image";
                     // otherwise the real message text, prefixed "You: " when it's ours.
-                    val subtitle = convo.lastReaction?.summary(state.contacts)
+                    val said = convo.lastReaction?.summary(state.contacts)
                         ?: ((if (convo.lastFromMe) "You: " else "") + convo.lastText)
+                    // A Beeper chat says which network it is on, ahead of what was said.
+                    val subtitle = convo.network?.let { "$it · $said" } ?: said
                     ConversationRow(
                         convo = convo,
                         title = state.contacts.title(convo),
@@ -172,7 +174,7 @@ fun ConversationsScreen(
                         // Deleting a chat needs the Private API (server gate); only then
                         // do we let the row swipe to reveal Delete. Agents always can —
                         // they're deleted locally, no server involved.
-                        canDelete = state.privateApi || convo.isAgent,
+                        canDelete = viewModel.caps(convo).deleteChat,
                         onDelete = { viewModel.deleteConversation(convo) },
                         onClick = { viewModel.open(convo) },
                         onToggleFavorite = { viewModel.toggleFavorite(convo) },

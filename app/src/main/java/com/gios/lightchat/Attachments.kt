@@ -60,12 +60,12 @@ object Attachments {
      * The decoded image for [attachment], or null if it isn't an image, the
      * download fails, or the bytes don't decode. Runs entirely off the main thread.
      */
-    suspend fun image(context: Context, api: BlueBubblesApi, attachment: Attachment): ImageBitmap? =
+    suspend fun image(context: Context, api: BlueBubblesApi?, attachment: Attachment): ImageBitmap? =
         load(context, api, attachment, MAX_DIM, memory)
 
     /** As [image], but decoded small for the contact page's grid. Shares the cached file
      *  on disk, so a photo opened full-screen afterwards does not download again. */
-    suspend fun thumbnail(context: Context, api: BlueBubblesApi, attachment: Attachment): ImageBitmap? =
+    suspend fun thumbnail(context: Context, api: BlueBubblesApi?, attachment: Attachment): ImageBitmap? =
         load(context, api, attachment, THUMB_DIM, thumbnails)
 
     /**
@@ -78,12 +78,12 @@ object Attachments {
      * fetched twice — and so an outgoing GIF renders from the bytes [cacheLocal] seeded, exactly
      * as an outgoing photograph does.
      */
-    suspend fun file(context: Context, api: BlueBubblesApi, attachment: Attachment): File? =
+    suspend fun file(context: Context, api: BlueBubblesApi?, attachment: Attachment): File? =
         withContext(Dispatchers.IO) { fetch(context, api, attachment) }
 
     private suspend fun load(
         context: Context,
-        api: BlueBubblesApi,
+        api: BlueBubblesApi?,
         attachment: Attachment,
         maxDim: Int,
         cache: LruCache<String, ImageBitmap>,
@@ -99,7 +99,7 @@ object Attachments {
     }
 
     /** The bytes on disk, downloaded if they aren't there yet. Caller is on IO. */
-    private suspend fun fetch(context: Context, api: BlueBubblesApi, attachment: Attachment): File? {
+    private suspend fun fetch(context: Context, api: BlueBubblesApi?, attachment: Attachment): File? {
         val file = File(context.cacheDir, "att_" + safeName(attachment.guid))
         if (file.exists() && file.length() > 0L) return file
         val ok = downloads.withPermit {
@@ -109,7 +109,15 @@ object Attachments {
             if (file.exists() && file.length() > 0L) {
                 true
             } else {
-                runCatching { api.downloadAttachment(attachment.guid, file) }
+                runCatching {
+                    // A Beeper attachment is fetched (and decrypted) through the Matrix client;
+                    // everything else is a BlueBubbles download from the Mac.
+                    if (com.gios.lightchat.beeper.BeeperMapping.isBeeperAttachment(attachment.guid)) {
+                        check(com.gios.lightchat.beeper.BeeperEngine.download(attachment.guid, file)) { "Beeper download failed" }
+                    } else {
+                        checkNotNull(api) { "Not connected" }.downloadAttachment(attachment.guid, file)
+                    }
+                }
                     .onFailure { file.delete() } // never trust a truncated file later
                     .isSuccess
             }

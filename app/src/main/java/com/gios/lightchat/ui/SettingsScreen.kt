@@ -143,6 +143,10 @@ fun SettingsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
         SectionHeader("Server")
         ServerUrl(viewModel)
 
+        // ---------------------------------------------------------------------------- beeper
+        SectionHeader("Beeper (beta)")
+        BeeperSection()
+
         // -------------------------------------------------------------------------- messages
         SectionHeader("Messages")
 

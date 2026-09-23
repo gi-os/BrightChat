@@ -474,6 +474,7 @@ class MessageStore private constructor(context: Context) {
             put("lastSender", c.lastSender ?: JSONObject.NULL)
             put("guids", JSONArray(c.guids))
             put("unread", c.unread)
+            c.network?.let { put("network", it) }
             c.lastReaction?.let { r ->
                 put(
                     "lastReaction",
@@ -518,6 +519,7 @@ class MessageStore private constructor(context: Context) {
                 },
                 guids = guids.ifEmpty { listOf(guid) },
                 unread = o.optBoolean("unread"),
+                network = o.optString("network").takeIf { it.isNotBlank() && it != "null" },
             )
         }
 

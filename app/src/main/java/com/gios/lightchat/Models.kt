@@ -55,7 +55,14 @@ data class Conversation(
     val isAgent: Boolean = false,
     // Local per-phone nickname overriding the display name (see Store.nicknames).
     val nickname: String? = null,
+    // The network a Beeper chat lives on ("WhatsApp", "Signal"…). Null for iMessage, which is
+    // everything BlueBubbles serves. See beeper/BeeperMapping.
+    val network: String? = null,
 ) {
+    /** A chat served by the Beeper backend rather than BlueBubbles. Its guid is `mx:!room:…`. */
+    val isBeeper: Boolean
+        get() = guid.startsWith(com.gios.lightchat.beeper.BeeperMapping.GUID_PREFIX)
+
     /** Human title: an explicit group name if set, otherwise the participants. Prefer
      *  `Contacts.title`, which resolves names; this is the nameless fallback. `"null"` is
      *  guarded because BlueBubbles sends a JSON null for an unnamed chat and org.json

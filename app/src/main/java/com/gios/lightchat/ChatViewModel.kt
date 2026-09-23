@@ -12,6 +12,9 @@ import com.gios.lightchat.api.AgentApi
 import com.gios.lightchat.api.ApiException
 import com.gios.light.common.report.Trouble
 import com.gios.lightchat.api.BlueBubblesApi
+import com.gios.lightchat.backend.Caps
+import com.gios.lightchat.beeper.BeeperEngine
+import com.gios.lightchat.beeper.BeeperMapping
 import com.gios.lightchat.api.Store
 import com.gios.lightchat.api.WhisperApi
 import com.gios.lightchat.dial.AddressBookRepo
@@ -33,6 +36,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 enum class Status { Idle, Loading, Ready, Error }
@@ -137,7 +141,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(
         UiState(
-            isConfigured = api != null,
+            isConfigured = api != null || BeeperEngine.hasSession(application),
             canTranscribe = Store.canTranscribe(application),
             privateApi = Store.privateApi(application),
             favorites = Store.favorites(application),
@@ -147,7 +151,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // network round trip decides what it should have said. Also what makes the app
             // usable with the tunnel down.
             agents = agentStore.agents(),
-            conversations = mergeAgents(if (api != null) store.chats() else emptyList()),
+            conversations = mergeAgents(
+                if (api != null || BeeperEngine.hasSession(application)) store.chats() else emptyList(),
+            ),
             contacts = Store.contacts(application),
             newsletters = Store.newsletters(application),
         ),
@@ -221,6 +227,105 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             refresh()
             startSocket()
         }
+        BeeperEngine.start(application)
+        observeBeeper()
+    }
+
+    // ---- Beeper -----------------------------------------------------------
+
+    /** What the conversation's backend can do. Screens ask this instead of reading privateApi. */
+    fun caps(conversation: Conversation?): Caps = Caps.of(conversation, _state.value.privateApi)
+
+    /**
+     * Beeper writes its rows into the same store BlueBubbles does; this re-reads them into the list
+     * whenever it says they changed, and marks the app configured the first time a Beeper account
+     * signs in on a phone with no Mac set up.
+     */
+    private fun observeBeeper() {
+        viewModelScope.launch {
+            BeeperEngine.changes.collect { reloadBeeperRows() }
+        }
+        viewModelScope.launch {
+            BeeperEngine.status.collect { status ->
+                if (status is BeeperEngine.Status.Ready && !_state.value.isConfigured) {
+                    _state.update { it.copy(isConfigured = true, status = Status.Ready) }
+                    reloadBeeperRows()
+                }
+                if (status is BeeperEngine.Status.SignedOut && api == null && _state.value.isConfigured) {
+                    _state.update { it.copy(isConfigured = false) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Swaps the list's Beeper rows for what the store holds now. Only the Beeper rows: the
+     * BlueBubbles ones in memory can be newer than the store (a live message a moment ago), and
+     * replacing them from disk would roll that back.
+     */
+    private fun reloadBeeperRows() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val fromDisk = runCatching { store.chats().filter { it.isBeeper } }.getOrNull() ?: return@launch
+            _state.update { s ->
+                val kept = s.conversations.filterNot { it.isBeeper }
+                val merged = (kept + fromDisk.map { c ->
+                    if (c.unread && (clearedUnread[c.guid] ?: 0L) >= c.lastDate) c.copy(unread = false) else c
+                }).sortedByDescending { it.lastDate }
+                s.copy(conversations = merged, status = if (s.status == Status.Loading) Status.Ready else s.status)
+            }
+        }
+    }
+
+    /** The Beeper half of [openThread] and [reopenThread]: disk, then the server. */
+    private fun loadBeeperThread(conversation: Conversation, cached: List<ChatMessage>?, showDisk: Boolean) {
+        threadJob?.cancel()
+        threadJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (showDisk && cached == null) {
+                    val onDisk = store.messages(conversation.guids, limit = MessageStore.PAGE)
+                    if (onDisk.isNotEmpty()) publishFetched(conversation.guid, onDisk)
+                }
+                BeeperEngine.thread(conversation.guid)
+                val msgs = store.messages(conversation.guids, limit = maxOf(MessageStore.PAGE, _state.value.threadWindow))
+                messageCache[conversation.guid] = msgs
+                publishFetched(conversation.guid, msgs)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _state.update { if (it.open?.guid == conversation.guid) it.copy(threadLoading = false) else it }
+                fail("Couldn’t load that chat", t)
+            }
+        }
+    }
+
+    /**
+     * Sends through Beeper and reconciles the optimistic bubble, the way [performSend] does for
+     * BlueBubbles. Blocking on purpose, like [performSend]: the photo loop relies on it to keep
+     * several files in the order they were picked.
+     */
+    private fun performBeeperSend(
+        convo: Conversation,
+        tempGuid: String,
+        errorMessage: String,
+        call: suspend () -> ChatMessage,
+    ) {
+        try {
+            val sent = runBlocking { call() }
+            reconcileEcho(convo.guid, tempGuid, sent)
+            bumpConversation(convo.guid, sent.previewText, sent.date, fromMe = true)
+        } catch (t: Throwable) {
+            rollbackOptimistic(convo.guid, tempGuid, errorMessage, t)
+        }
+    }
+
+    /** Fetches an attachment from whichever backend holds it. */
+    private suspend fun downloadInto(attachment: Attachment, dest: File) {
+        if (BeeperMapping.isBeeperAttachment(attachment.guid)) {
+            if (!BeeperEngine.download(attachment.guid, dest)) throw IllegalStateException("Beeper download failed")
+            return
+        }
+        val client = api ?: throw IllegalStateException("Not connected")
+        client.downloadAttachment(attachment.guid, dest)
     }
 
     // ---- Setup ------------------------------------------------------------
@@ -281,7 +386,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     // ---- Conversation list ------------------------------------------------
 
     fun refresh() {
-        if (api == null) return
+        if (api == null) {
+            reloadBeeperRows()
+            return
+        }
         lastRefreshAt = SystemClock.elapsedRealtime()
         loadJob?.cancel()
         loadJob = viewModelScope.launch(Dispatchers.IO) { loadConversations() }
@@ -299,7 +407,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * identical requests and the second would cancel the first.
      */
     fun refreshOnResume() {
-        if (api == null) return
+        if (api == null) {
+            _state.value.open?.takeIf { it.isBeeper }?.let { reopenThread(it) }
+            reloadBeeperRows()
+            return
+        }
         // The open thread first, and unconditionally. Leaving the app from inside a chat
         // leaves `open` set, so coming back re-shows that thread from the cache — if the
         // socket missed anything (process killed, tunnel down, Doze), the reply simply
@@ -314,6 +426,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  no "Loading…", no scroll change, the cached list stays on screen until the fresh
      *  one lands. */
     private fun reopenThread(conversation: Conversation) {
+        if (conversation.isBeeper) {
+            loadBeeperThread(conversation, messageCache[conversation.guid], showDisk = false)
+            return
+        }
         val syncer = sync ?: return
         threadJob?.cancel()
         threadJob = viewModelScope.launch(Dispatchers.IO) {
@@ -508,6 +624,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         AppForeground.visibleChatGuids = conversation.guids.toSet()
         // A share that arrived without a recipient was waiting for exactly this.
         flushPendingShared()
+        if (conversation.isBeeper) {
+            loadBeeperThread(conversation, cached, showDisk = true)
+            return
+        }
         threadJob?.cancel()
         threadJob = viewModelScope.launch(Dispatchers.IO) {
             val syncer = sync ?: return@launch
@@ -550,6 +670,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun loadOlder() {
         val conversation = _state.value.open ?: return
+        if (conversation.isBeeper) {
+            loadOlderBeeper(conversation)
+            return
+        }
         val syncer = sync ?: return
         if (_state.value.loadingOlder || _state.value.historyExhausted) return
         // Not while the open fetch is still running: both assign openRaw, and whichever
@@ -580,6 +704,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // Keeps in-flight sends: a page of history is fetched precisely while you are
             // waiting for photos to upload, and it used to wipe every bubble that was still
             // going up. See replaceKeepingPending.
+            publishFetched(conversation.guid, older, clearLoading = false)
+            _state.update { it.copy(loadingOlder = false, threadWindow = window) }
+        }
+    }
+
+    /** [loadOlder] for a Beeper chat: pages the room back from the oldest message held. */
+    private fun loadOlderBeeper(conversation: Conversation) {
+        if (_state.value.loadingOlder || _state.value.historyExhausted) return
+        if (_state.value.threadLoading || threadJob?.isActive == true) return
+        val oldest = openRaw.filterNot { it.guid.startsWith("temp-") }.minByOrNull { it.date } ?: return
+        val window = _state.value.threadWindow + MessageStore.PAGE
+        _state.update { it.copy(loadingOlder = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val fetched = runCatching { BeeperEngine.thread(conversation.guid, beforeEventId = oldest.guid) }
+                .getOrNull().orEmpty()
+            if (_state.value.open?.guid != conversation.guid) {
+                _state.update { it.copy(loadingOlder = false) }
+                return@launch
+            }
+            if (fetched.isEmpty()) {
+                _state.update { it.copy(loadingOlder = false, historyExhausted = true) }
+                return@launch
+            }
+            val older = store.messages(conversation.guids, limit = window)
+            messageCache[conversation.guid] = older
             publishFetched(conversation.guid, older, clearLoading = false)
             _state.update { it.copy(loadingOlder = false, threadWindow = window) }
         }
@@ -800,8 +949,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             deleteAgent(conversation.guid.removePrefix("agent:"))
             return
         }
-        if (!_state.value.privateApi) {
-            _state.update { it.copy(message = "Deleting needs the Private API") }
+        if (!caps(conversation).deleteChat) {
+            _state.update {
+                it.copy(message = if (conversation.isBeeper) "Delete Beeper chats in Beeper" else "Deleting needs the Private API")
+            }
             return
         }
         val client = api ?: return
@@ -1143,7 +1294,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val convo = _state.value.open ?: return
         if (body.isEmpty()) return
         finishTyping(convo.guid) // sending clears our typing bubble
-        val reply = replyToGuid?.takeIf { _state.value.privateApi && !it.startsWith("temp-") }
+        val reply = replyToGuid?.takeIf { caps(convo).replies && !it.startsWith("temp-") }
         // Optimistic: show it immediately under a temp guid, then swap in the
         // server's echo (real guid) so the socket's new-message dedupes cleanly.
         val tempGuid = newTempGuid()
@@ -1154,6 +1305,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         updateOpenThread(convo.guid) { it + optimistic }
         _state.update { it.copy(message = null) }
         viewModelScope.launch(Dispatchers.IO) {
+            if (convo.isBeeper) {
+                performBeeperSend(convo, tempGuid, "Couldn’t send") {
+                    BeeperEngine.sendText(convo.guid, body, reply, tempGuid)
+                }
+                return@launch
+            }
             performSend(convo, tempGuid, "Couldn’t send") { client, g, method ->
                 client.send(g, body, tempGuid, method, reply)
             }
@@ -1188,9 +1345,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun editMessage(target: ChatMessage, newText: String) {
         val body = newText.trim()
         val convo = _state.value.open ?: return
-        if (!_state.value.privateApi || !canEdit(target)) return
+        if (!caps(convo).edits || !canEdit(target)) return
         if (body.isEmpty() || body == target.text) return
-        val client = api ?: return
+        val client = api
+        if (client == null && !convo.isBeeper) return
         val before = target.text
         val stamp = System.currentTimeMillis()
         updateOpenThread(convo.guid) { list ->
@@ -1199,7 +1357,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         previewEdited(convo, target, body)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val edited = client.edit(target.guid, body)
+                val edited = if (convo.isBeeper) {
+                    BeeperEngine.edit(convo.guid, target.guid, body)
+                    target.copy(text = body, dateEdited = stamp)
+                } else {
+                    requireNotNull(client).edit(target.guid, body)
+                }
                 updateOpenThread(convo.guid) { list ->
                     list.map {
                         if (it.guid == target.guid) {
@@ -1246,7 +1409,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun sendReaction(target: ChatMessage, type: ReactionType) {
         val convo = _state.value.open ?: return
-        if (!_state.value.privateApi) return
+        if (!caps(convo).reactions) return
         if (target.guid.startsWith("temp-")) {
             _state.update { it.copy(message = "Still sending — try again in a moment") }
             return
@@ -1263,8 +1426,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             associatedMessageGuid = target.guid,
             associatedMessageType = apiValue, // "love" or "-love"
         )
+        // Matrix takes a reaction back by redacting the reaction event, so find ours now, on the
+        // thread that owns openRaw.
+        val mineToRedact = if (convo.isBeeper && removing) {
+            openRaw.lastOrNull {
+                it.isReaction && it.fromMe && !it.isReactionRemoval &&
+                    it.reactionTargetGuid == target.guid && it.reactionType == type &&
+                    !it.guid.startsWith("temp-")
+            }?.guid
+        } else {
+            null
+        }
         updateOpenThread(convo.guid) { it + optimistic }
         viewModelScope.launch(Dispatchers.IO) {
+            if (convo.isBeeper) {
+                try {
+                    if (removing) {
+                        if (mineToRedact != null) BeeperEngine.redact(convo.guid, mineToRedact)
+                        reconcileEcho(convo.guid, tempGuid, optimistic.copy(guid = "removed-" + tempGuid))
+                    } else {
+                        val sent = BeeperEngine.react(convo.guid, target.guid, type)
+                        reconcileEcho(convo.guid, tempGuid, sent)
+                    }
+                } catch (t: Throwable) {
+                    rollbackOptimistic(convo.guid, tempGuid, "Couldn’t react")
+                }
+                return@launch
+            }
             val client = api ?: return@launch
             try {
                 val sent = client.react(convo.guid, target.guid, apiValue)
@@ -1286,10 +1474,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun renameGroup(name: String) {
         val convo = _state.value.open ?: return
         val newName = name.trim()
-        if (!_state.value.privateApi || !convo.isGroup || newName.isEmpty()) return
-        val client = api ?: return
+        if (!caps(convo).groupRename || !convo.isGroup || newName.isEmpty()) return
+        val client = api
+        if (client == null && !convo.isBeeper) return
         viewModelScope.launch(Dispatchers.IO) {
-            val results = convo.guids.map { g -> runCatching { client.renameChat(g, newName) } }
+            val results = if (convo.isBeeper) {
+                listOf(runCatching { BeeperEngine.rename(convo.guid, newName) })
+            } else {
+                convo.guids.map { g -> runCatching { requireNotNull(client).renameChat(g, newName) } }
+            }
             if (results.none { it.isSuccess }) {
                 fail("Couldn’t rename")
                 return@launch
@@ -1360,11 +1553,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  surfaces as the failure message. */
     fun leaveGroup() {
         val convo = _state.value.open ?: return
-        if (!_state.value.privateApi || !convo.isGroup) return
-        val client = api ?: return
+        if (!caps(convo).groupRename || !convo.isGroup) return
+        val client = api
+        if (client == null && !convo.isBeeper) return
         _state.update { it.copy(message = "Leaving…") }
         viewModelScope.launch(Dispatchers.IO) {
-            val results = convo.guids.map { g -> runCatching { client.leaveChat(g) } }
+            val results = if (convo.isBeeper) {
+                listOf(runCatching { BeeperEngine.leave(convo.guid) })
+            } else {
+                convo.guids.map { g -> runCatching { requireNotNull(client).leaveChat(g) } }
+            }
             if (results.none { it.isSuccess }) {
                 fail("Couldn’t leave the conversation")
                 return@launch
@@ -1394,14 +1592,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Decoded inline image for [attachment] (downloaded + cached on first use),
      *  or null if it isn't an image / can't be fetched. Called from the thread UI. */
     suspend fun loadImage(attachment: Attachment): ImageBitmap? {
-        val client = api ?: return null
-        return Attachments.image(app, client, attachment)
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) return null
+        return Attachments.image(app, api, attachment)
     }
 
     /** The small decode, for the contact page's grid. Same file on disk as [loadImage]. */
     suspend fun loadThumbnail(attachment: Attachment): ImageBitmap? {
-        val client = api ?: return null
-        return Attachments.thumbnail(app, client, attachment)
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) return null
+        return Attachments.thumbnail(app, api, attachment)
     }
 
     /**
@@ -1409,8 +1607,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * from the file rather than decoded to a bitmap. See [Attachments.file].
      */
     suspend fun loadImageFile(attachment: Attachment): File? {
-        val client = api ?: return null
-        return Attachments.file(app, client, attachment)
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) return null
+        return Attachments.file(app, api, attachment)
     }
 
     /**
@@ -1575,7 +1773,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAttachment(attachment: Attachment, onReady: (File) -> Unit) {
-        val client = api ?: return
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) return
         // An optimistic row carries the send's temp guid, which the server has never
         // heard of — asking it to stream that back returns a 404 and the user is told
         // the download failed for a file that is still on its way *up*. Only video
@@ -1589,7 +1787,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val dest = attachmentFile(attachment)
-                if (!dest.exists() || dest.length() == 0L) client.downloadAttachment(attachment.guid, dest)
+                if (!dest.exists() || dest.length() == 0L) downloadInto(attachment, dest)
                 _state.update { it.copy(message = null) }
                 withContext(Dispatchers.Main) { onReady(dest) }
             } catch (t: Throwable) {
@@ -1634,7 +1832,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun saveAttachment(attachment: Attachment) {
         // Said out loud rather than returned from silently: the gesture has already ticked the
         // haptic, so doing nothing reads as the hold not having registered.
-        val client = api ?: run {
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) {
             _state.update { it.copy(message = "Not connected") }
             return
         }
@@ -1647,7 +1845,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // guards this; saving copied the download and not the guard.
                 val onlyLocal = attachment.guid.startsWith("temp-")
                 if (!onlyLocal && (!dest.exists() || dest.length() == 0L)) {
-                    client.downloadAttachment(attachment.guid, dest)
+                    downloadInto(attachment, dest)
                 }
                 if (!dest.exists() || dest.length() == 0L) throw IllegalStateException("no bytes")
                 val target = SaveTo.of(attachment.mimeType, attachment.transferName, attachment.guid)
@@ -1661,12 +1859,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openAttachment(attachment: Attachment) {
-        val client = api ?: return
+        if (api == null && !BeeperMapping.isBeeperAttachment(attachment.guid)) return
         _state.update { it.copy(message = "Downloading…") }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val dest = attachmentFile(attachment)
-                if (!dest.exists() || dest.length() == 0L) client.downloadAttachment(attachment.guid, dest)
+                if (!dest.exists() || dest.length() == 0L) downloadInto(attachment, dest)
                 val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", dest)
                 val mime = attachment.mimeType ?: "application/octet-stream"
                 _state.update { it.copy(message = null) }
@@ -1799,6 +1997,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // several files land in the thread in the order they were picked. It also means
         // a big clip holds up the ones behind it, which is the correct trade — the
         // alternative is a parallel upload competing for the same tunnel.
+        if (convo.isBeeper) {
+            performBeeperSend(convo, tempGuid, "Couldn’t send ${kindOf(file)}") {
+                BeeperEngine.sendMedia(convo.guid, file.readBytes(), file.name, mime, tempGuid)
+            }
+            return
+        }
         performSend(convo, tempGuid, "Couldn’t send video") { client, g, method ->
             client.sendAttachment(g, file, file.name, mime, tempGuid, method)
         }
@@ -1835,6 +2039,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(message = null) }
         // Blocking, deliberately: sendImageFiles loops over this on one IO coroutine
         // so several photos land in the thread in the order they were picked.
+        if (convo.isBeeper) {
+            performBeeperSend(convo, tempGuid, "Couldn’t send image") {
+                BeeperEngine.sendMedia(convo.guid, img.bytes, img.name, img.mime, tempGuid)
+            }
+            return
+        }
         performSend(convo, tempGuid, "Couldn’t send image") { client, g, method ->
             client.sendAttachment(g, img.bytes, img.name, img.mime, tempGuid, method)
         }
@@ -2613,17 +2823,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  typing on the first keystroke and schedules an auto-stop after a pause; an
      *  empty field stops immediately. No-op unless the Private API is live. */
     fun onComposeTextChanged(text: String) {
-        if (!_state.value.privateApi) return
-        val guid = _state.value.open?.guid ?: return
+        val open = _state.value.open ?: return
+        if (!caps(open).typing) return
+        val guid = open.guid
         if (text.isBlank()) {
             typingStopJob?.cancel()
             stopTypingNow(guid)
             return
         }
-        val client = api ?: return
         if (!typingSent) {
             typingSent = true
-            viewModelScope.launch(Dispatchers.IO) { runCatching { client.startTyping(guid) } }
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    if (BeeperMapping.isBeeper(guid)) BeeperEngine.typing(guid, true) else api?.startTyping(guid)
+                }
+            }
         }
         typingStopJob?.cancel()
         typingStopJob = viewModelScope.launch {
@@ -2635,8 +2849,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun stopTypingNow(guid: String) {
         if (!typingSent) return
         typingSent = false
-        val client = api ?: return
-        viewModelScope.launch(Dispatchers.IO) { runCatching { client.stopTyping(guid) } }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (BeeperMapping.isBeeper(guid)) BeeperEngine.typing(guid, false) else api?.stopTyping(guid)
+            }
+        }
     }
 
     /** Cancel a pending auto-stop and clear our typing state — on send or close. */
@@ -2724,7 +2941,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         persistIncoming(incoming)
         // A message for a chat not currently in the list (e.g. a brand-new
         // conversation) — pull the list again so it appears with full metadata.
-        if (!known) refresh()
+        if (!known) {
+            if (BeeperMapping.isBeeper(incoming.chatGuid)) reloadBeeperRows() else refresh()
+        }
     }
 
     /** Writes a live message and its list row through to the store, off the main thread. */
@@ -2833,6 +3052,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Marks [chatGuid] read on the server (best-effort, off-main), but only when
      *  the Private API is live — it's the only path that can send a read receipt. */
     private fun markReadIfPrivate(chatGuid: String) {
+        if (BeeperMapping.isBeeper(chatGuid)) {
+            viewModelScope.launch(Dispatchers.IO) { runCatching { BeeperEngine.markRead(chatGuid) } }
+            return
+        }
         if (!_state.value.privateApi) return
         val client = api ?: return
         viewModelScope.launch(Dispatchers.IO) { runCatching { client.markRead(chatGuid) } }
@@ -2924,7 +3147,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         Store.signOut(app)
         clearStore()
         messageCache.clear()
-        _state.value = UiState(isConfigured = false, message = message)
+        // The store was shared: Beeper's rows went with it, so have Beeper write them again.
+        BeeperEngine.invalidateRows()
+        _state.value = UiState(isConfigured = BeeperEngine.hasSession(app), message = message)
     }
 
     override fun onCleared() {

@@ -139,5 +139,20 @@ fun SetupScreen(viewModel: ChatViewModel) {
             onClick = { if (canSave) viewModel.saveSetup(serverUrl, password) },
         )
         Spacer(modifier = Modifier.height(24.dp))
+
+        // No Mac? Beeper alone is enough to use the app: WhatsApp, Signal and the rest, with
+        // iMessage added later from Settings.
+        var beeper by remember { mutableStateOf(false) }
+        HapticText(
+            text = if (beeper) "Hide Beeper" else "No Mac? Sign in with Beeper",
+            style = ChatType.hint,
+            color = ChatColors.onSurfaceDim,
+            onClick = { beeper = !beeper },
+        )
+        if (beeper) {
+            Spacer(modifier = Modifier.height(16.dp))
+            BeeperSection()
+        }
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
