@@ -88,3 +88,24 @@
 -keep class com.gios.lightchat.share.ChatsProvider { public <init>(); }
 -keep class com.gios.lightchat.share.CodeProvider { public <init>(); }
 -keep class com.gios.lightchat.backup.Backup { public <init>(); }
+
+# ---------------------------------------------------------------- Beeper / Trixnity
+
+# Trixnity's olm driver reaches libolm through JNA, which looks fields up by name from native
+# code. Renamed or stripped, E2EE fails at login with "Can't obtain peer field ID for class
+# com.sun.jna.Pointer". Same rules fenleon/chats ships on the LP3.
+-keep class com.sun.jna.** { *; }
+-dontwarn com.sun.jna.**
+-keep class de.connect2x.trixnity.libolm.** { *; }
+
+# The whole Matrix stack is kept rather than tuned. It builds its services through koin and
+# its events through kotlinx-serialization polymorphism, and a class R8 wrongly believes unused
+# fails only at runtime, only in a release build, only in an encrypted room. The size cost is a
+# few MB on an app that is already mostly Compose.
+-keep class de.connect2x.trixnity.** { *; }
+-keep class de.connect2x.lognity.** { *; }
+-dontwarn de.connect2x.**
+-dontwarn io.ktor.**
+-dontwarn org.slf4j.**
+-dontwarn java.lang.management.**
+-dontwarn org.koin.**

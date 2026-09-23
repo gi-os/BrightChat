@@ -54,3 +54,9 @@ jobs:
       # Same `env -u CI` reasoning as above: the release block is evaluated for any task.
       - name: Unit tests
         run: env -u CI ./gradlew :app:testDebugUnitTest --stacktrace
+
+      # R8 only runs on a release build, and a missing-class or stripped-class failure there
+      # used to be found by the push that ships. Debug-signed here (CI unset, no keystore), so it
+      # proves the shrink works without publishing anything.
+      - name: Release build (R8)
+        run: env -u CI ./gradlew :app:assembleRelease --stacktrace

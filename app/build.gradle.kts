@@ -72,7 +72,7 @@ fun scramble(value: String): String {
 
 android {
     namespace = "com.gios.lightchat"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.gios.lightchat"
@@ -141,11 +141,21 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        // 17, not 11: the Beeper backend's Matrix library (Trixnity) ships inline functions
+        // compiled for JVM 17, and Kotlin refuses to inline 17 bytecode into an 11 target.
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "11"
+    packaging {
+        resources {
+            // Ktor, koin and kotlinx each ship the same license and module files.
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/INDEX.LIST",
+                "/META-INF/DEPENDENCIES",
+                "/META-INF/io.netty.versions.properties",
+            )
+        }
     }
     buildFeatures {
         buildConfig = true
@@ -153,7 +163,29 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        // Trixnity's v5 repositories use Kotlin context parameters in their public API.
+        freeCompilerArgs.add("-Xcontext-parameters")
+    }
+}
+
 dependencies {
+    // Beeper (WhatsApp, Signal, Telegram, Instagram…) over Matrix. Trixnity is the library both
+    // working Light Phone Beeper clients use (fenleon/chats, Beeper4LightOS), at the version
+    // fenleon/chats runs on the LP3. The HTTP engine is Ktor's Android engine
+    // (HttpURLConnection), deliberately not OkHttp: socket.io below pins OkHttp 3.12 for the
+    // BlueBubbles socket, and Ktor's OkHttp engine would pull OkHttp 5 beside it.
+    val trixnity = "5.8.0"
+    implementation("de.connect2x.trixnity:trixnity-client:$trixnity")
+    implementation("de.connect2x.trixnity:trixnity-client-repository-room:$trixnity")
+    implementation("de.connect2x.trixnity:trixnity-client-media-okio:$trixnity")
+    implementation("de.connect2x.trixnity:trixnity-client-cryptodriver-libolm:$trixnity")
+    implementation("io.ktor:ktor-client-android:3.5.2")
+    implementation("androidx.room:room-runtime:2.8.4")
+    implementation("androidx.room:room-ktx:2.8.4")
+
     // Shake-to-report, the wheel, and the LightSync backup provider. The wheel arrived in
     // the library at 1.2.0; until this version it was a vendored copy under
     // com.gios.lightchat.hw, which is now deleted.
@@ -185,7 +217,7 @@ dependencies {
     // Central — no Google Play Services, matching the rest of the app.
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.core:core-splashscreen:1.2.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // WorkManager, only for DeliveryWorker: a catch-up path that lives in JobScheduler
     // instead of AlarmManager, so it survives the things that break the alarm chain
     // (force-stop, app update with the process dead) and is restored after a reboot with
