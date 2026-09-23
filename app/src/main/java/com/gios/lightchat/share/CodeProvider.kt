@@ -57,7 +57,7 @@ class CodeProvider : ContentProvider() {
             // the catch-up poll saw the message first, and a build of either that ever writes
             // something malformed should not be able to put it in front of the user.
             if (!LoginCodes.wellFormedCode(held.code)) return@runCatching
-            cursor.addRow(arrayOf(held.code, held.arrivedAt))
+            cursor.addRow(arrayOf<Any?>(held.code, held.arrivedAt))
         }
         return cursor
     }

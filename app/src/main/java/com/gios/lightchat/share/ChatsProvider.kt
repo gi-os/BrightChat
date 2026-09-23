@@ -61,7 +61,7 @@ class ChatsProvider : ContentProvider() {
                 .filter { it.isGroup }
                 .forEach { chat ->
                     cursor.addRow(
-                        arrayOf(
+                        arrayOf<Any?>(
                             chat.guid,
                             contacts.title(chat),
                             chat.participants.size,
