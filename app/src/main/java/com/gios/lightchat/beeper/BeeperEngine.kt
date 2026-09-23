@@ -94,6 +94,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import okio.Path.Companion.toPath
@@ -277,7 +278,11 @@ object BeeperEngine {
     // ------------------------------------------------------------------ login
 
     /** Step 1: Beeper emails [email] a six-digit code. */
-    suspend fun requestCode(email: String): Result<Unit> = runCatching {
+    suspend fun requestCode(email: String): Result<Unit> = withContext(Dispatchers.IO) { requestCodeBlocking(email) }
+
+    // Network and disk, so never on the caller's thread: the Settings field calls this from a
+    // Compose scope, which is the main thread (v2.44.91 failed with NetworkOnMainThreadException).
+    private suspend fun requestCodeBlocking(email: String): Result<Unit> = runCatching {
         val ctx = appContext ?: error("not started")
         val address = email.trim()
         require(address.contains("@")) { "That doesn’t look like an email address." }
@@ -290,7 +295,9 @@ object BeeperEngine {
     }.onFailure { fail("Couldn’t send the code", it) }
 
     /** Step 2: trades the emailed [code] for a Matrix session on Beeper's homeserver. */
-    suspend fun signIn(code: String): Result<Unit> = runCatching {
+    suspend fun signIn(code: String): Result<Unit> = withContext(Dispatchers.IO) { signInBlocking(code) }
+
+    private suspend fun signInBlocking(code: String): Result<Unit> = runCatching {
         val ctx = appContext ?: error("not started")
         val request = prefs(ctx).getString(KEY_REQUEST, null) ?: error("Ask for a code first.")
         _status.value = Status.Working
@@ -333,7 +340,10 @@ object BeeperEngine {
      * cross-signing secrets with it, and then [KeyTrustService] signs this device. From
      * fenleon/chats, where the reasoning is written out in full.
      */
-    suspend fun verifyWithRecoveryKey(recoveryKey: String): Result<Unit> = runCatching {
+    suspend fun verifyWithRecoveryKey(recoveryKey: String): Result<Unit> =
+        withContext(Dispatchers.IO) { verifyBlocking(recoveryKey) }
+
+    private suspend fun verifyBlocking(recoveryKey: String): Result<Unit> = runCatching {
         val c = client ?: error("Sign in first.")
         val methods = withTimeoutOrNull(10_000) { c.verification.getSelfVerificationMethods().first() }
             ?: error("Beeper hasn’t said how this account verifies yet. Try again in a minute.")
@@ -368,7 +378,9 @@ object BeeperEngine {
         throw e
     }.onFailure { note("verify failed: ${it.message}") }
 
-    suspend fun signOut() {
+    suspend fun signOut() = withContext(Dispatchers.IO) { signOutBlocking() }
+
+    private suspend fun signOutBlocking() {
         val ctx = appContext ?: return
         lifecycle.withLock {
             observers?.cancel()
