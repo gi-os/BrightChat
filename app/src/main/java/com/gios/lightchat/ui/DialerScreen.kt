@@ -69,8 +69,30 @@ import com.gios.lightchat.ui.theme.ChatType
 fun DialerScreen(
     tab: com.gios.lightchat.ui.ConversationTab,
     onSelectTab: (com.gios.lightchat.ui.ConversationTab) -> Unit,
+    /** Opens a chat from a Beeper call in the recent list. */
+    onOpenChat: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
+    // Recent calls sit under the speed dials, and only with Beeper signed in: a phone with just
+    // iMessage keeps the pad exactly as it was.
+    val showRecents = remember { com.gios.lightchat.beeper.BeeperEngine.hasSession(context) }
+    var callsGranted by remember { mutableStateOf(com.gios.lightchat.people.CallHistory.canReadPhone(context)) }
+    val askCalls = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        callsGranted = it
+    }
+    var recents by remember { mutableStateOf<List<com.gios.lightchat.people.RecentCall>>(emptyList()) }
+    LaunchedEffect(showRecents, callsGranted) {
+        if (!showRecents) return@LaunchedEffect
+        recents = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val store = com.gios.lightchat.db.MessageStore.get(context)
+            com.gios.lightchat.people.CallHistory.recent(
+                context,
+                Store.contacts(context),
+                runCatching { store.callNotices() }.getOrDefault(emptyList()),
+                chatOf = { store.chat(it) },
+            )
+        }
+    }
     val haptics = LocalHapticFeedback.current
     val ring = rememberCaller()
 
@@ -229,6 +251,49 @@ fun DialerScreen(
                                         notice = "${slot.key} is free again"
                                     },
                                 )
+                            }
+                        }
+                        if (digits.isEmpty() && showRecents) {
+                            item(key = "recents-label") {
+                                Text(
+                                    text = "Recent",
+                                    style = ChatType.hint,
+                                    color = ChatColors.onSurfaceDisabled,
+                                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                                )
+                            }
+                            if (!callsGranted) {
+                                item(key = "recents-allow") {
+                                    DialRow(
+                                        title = "Show phone calls",
+                                        subtitle = "Reads the call history on this phone",
+                                        onClick = { askCalls.launch(Manifest.permission.READ_CALL_LOG) },
+                                    )
+                                }
+                            }
+                            items(recents, key = { "recent-" + it.call.date + it.call.via + (it.number ?: it.chatGuid) }) { recent ->
+                                DialRow(
+                                    title = recent.name,
+                                    subtitle = recent.call.kind + " · " + recent.call.via + " · " + listTime(context, recent.call.date),
+                                    onClick = {
+                                        val number = recent.number
+                                        val chat = recent.chatGuid
+                                        when {
+                                            number != null -> ring(number)
+                                            chat != null -> onOpenChat(chat)
+                                        }
+                                    },
+                                )
+                            }
+                            if (recents.isEmpty() && callsGranted) {
+                                item(key = "recents-empty") {
+                                    Text(
+                                        text = "No calls yet.",
+                                        style = ChatType.hint,
+                                        color = ChatColors.onSurfaceDim,
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                    )
+                                }
                             }
                         }
                         items(if (digits.isEmpty()) emptyList() else results, key = { it.id }) { contact ->

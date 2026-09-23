@@ -53,6 +53,16 @@ data class CallEntry(
     val durationSec: Long = 0,
 )
 
+/** A row of the Dial tab's recent calls: who, what happened, and how to get back to them. */
+data class RecentCall(
+    val name: String,
+    val call: CallEntry,
+    /** The number to ring back, for a phone call. */
+    val number: String? = null,
+    /** The chat to open, for a Beeper call. */
+    val chatGuid: String? = null,
+)
+
 /**
  * A person's calls: the phone's call history for their numbers, and the call notices Beeper's
  * bridges post into their chats ("Missed voice call"). Newest first.
@@ -92,6 +102,57 @@ object CallHistory {
             }
         }
         return out
+    }
+
+    /**
+     * Every recent call, for the Dial tab: the phone's history (named from the address book) and
+     * the call notices in Beeper chats (named after the chat). Newest first.
+     */
+    fun recent(
+        context: Context,
+        contacts: Contacts,
+        notices: List<ChatMessage>,
+        chatOf: (String) -> com.gios.lightchat.Conversation?,
+        limit: Int = 60,
+    ): List<RecentCall> {
+        val phone = ArrayList<RecentCall>()
+        if (canReadPhone(context)) {
+            runCatching {
+                context.contentResolver.query(
+                    CallLog.Calls.CONTENT_URI,
+                    arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION),
+                    null,
+                    null,
+                    CallLog.Calls.DATE + " DESC",
+                )?.use { c ->
+                    while (c.moveToNext() && phone.size < limit) {
+                        val number = c.getString(0).orEmpty()
+                        val kind = when (c.getInt(1)) {
+                            CallLog.Calls.INCOMING_TYPE -> "Incoming"
+                            CallLog.Calls.OUTGOING_TYPE -> "Outgoing"
+                            CallLog.Calls.MISSED_TYPE -> "Missed"
+                            CallLog.Calls.REJECTED_TYPE -> "Declined"
+                            else -> "Call"
+                        }
+                        phone += RecentCall(
+                            name = contacts.name(number) ?: number.ifBlank { "Unknown" },
+                            call = CallEntry(c.getLong(2), kind, "Phone", c.getLong(3)),
+                            number = number.takeIf { it.isNotBlank() },
+                        )
+                    }
+                }
+            }
+        }
+        val beeper = notices.mapNotNull { m ->
+            val room = m.room ?: return@mapNotNull null
+            val chat = chatOf(room)
+            RecentCall(
+                name = chat?.displayName?.takeIf { it.isNotBlank() } ?: "Unknown",
+                call = CallEntry(m.date, m.text, chat?.network ?: "Beeper"),
+                chatGuid = room,
+            )
+        }
+        return (phone + beeper).sortedByDescending { it.call.date }.take(limit)
     }
 
     /** The call notices among a person's messages, labelled with each one's network. */

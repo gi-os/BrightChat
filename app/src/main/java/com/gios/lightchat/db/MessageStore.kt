@@ -176,6 +176,31 @@ class MessageStore private constructor(context: Context) {
      * than its target. `guid` is the back half of the primary key, so this is a scan —
      * fine at one row per incoming reaction, and the table is trimmed per chat anyway.
      */
+    /**
+     * The newest call notices across every chat, with the chat each came from. Only Beeper rows
+     * carry the flag (see beeper/BeeperMapping), so an iMessage-only store returns nothing.
+     */
+    fun callNotices(limit: Int = 50): List<ChatMessage> {
+        val out = ArrayList<ChatMessage>()
+        helper.readableDatabase.query(
+            "messages",
+            arrayOf("chat_guid", "json"),
+            "json LIKE ?",
+            arrayOf("%\"isCallEvent\":true%"),
+            null,
+            null,
+            "date DESC",
+            limit.toString(),
+        ).use { c ->
+            while (c.moveToNext()) {
+                val room = c.getString(0)
+                runCatching { BlueBubblesApi.parseMessage(JSONObject(c.getString(1))) }
+                    .getOrNull()?.let { out.add(it.copy(room = room)) }
+            }
+        }
+        return out
+    }
+
     fun messageByGuid(guid: String): ChatMessage? {
         val db = helper.readableDatabase
         db.query("messages", arrayOf("json"), "guid = ?", arrayOf(guid), null, null, null, "1")

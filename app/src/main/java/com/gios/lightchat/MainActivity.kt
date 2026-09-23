@@ -402,7 +402,11 @@ fun LightChatApp(viewModel: ChatViewModel) {
             BackHandler { viewModel.closeThread() }
             ThreadScreen(viewModel)
         }
-        tab == ConversationTab.Dial -> DialerScreen(tab = tab, onSelectTab = { tab = it })
+        tab == ConversationTab.Dial -> DialerScreen(
+            tab = tab,
+            onSelectTab = { tab = it },
+            onOpenChat = { viewModel.openByGuid(it) },
+        )
         else -> ConversationsScreen(
             viewModel,
             tab = tab,

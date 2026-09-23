@@ -177,6 +177,10 @@ access the first time) and the call notices WhatsApp or Signal post. The **via**
 keyboard shows where the next message goes, the network they last wrote from by default; tap it
 to change. A reply always goes back to the network of the message it answers.
 
+The Dial tab also lists **Recent** calls under the speed dials: phone calls (named from your
+contacts) and WhatsApp or Signal call notices. Tap a phone call to ring back, or a Beeper call to
+open that chat.
+
 Without Beeper none of this appears, and the app looks and works as before.
 
 ### Optional features
