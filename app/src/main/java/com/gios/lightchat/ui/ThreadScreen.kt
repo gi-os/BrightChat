@@ -329,15 +329,16 @@ fun ThreadScreen(viewModel: ChatViewModel) {
             if (strip.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                    horizontalArrangement = Arrangement.Center,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    strip.forEachIndexed { i, name ->
-                        if (i > 0) Text(" · ", style = ChatType.hint, color = ChatColors.onSurfaceDisabled)
-                        HapticText(
-                            text = name,
-                            style = ChatType.hint,
-                            color = if (name == showing) ChatColors.onSurface else ChatColors.onSurfaceDisabled,
-                            onClick = {
+                    strip.forEach { name ->
+                        val dim = name != showing
+                        Box(
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                            ) {
                                 showing = name
                                 if (name == CALLS) {
                                     if (!com.gios.lightchat.people.CallHistory.canReadPhone(context)) {
@@ -347,7 +348,13 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                                     }
                                 }
                             },
-                        )
+                        ) {
+                            when (name) {
+                                ALL_NETWORKS -> AllTile(dim = dim)
+                                CALLS -> CallsTile(dim = dim)
+                                else -> NetworkTile(name, dim = dim)
+                            }
+                        }
                     }
                 }
             }
@@ -442,13 +449,9 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                     // Newest first so reverseLayout pins it to the bottom.
                     items(shown.asReversed(), key = { it.guid }) { message ->
                         runStarts[message.guid]?.let { network ->
-                            Text(
-                                text = "on $network",
-                                style = ChatType.hint,
-                                color = ChatColors.onSurfaceDisabled,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                            )
+                            Box(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+                                NetworkTile(network, dim = true)
+                            }
                         }
                         MessageRow(
                             message,
@@ -596,14 +599,27 @@ fun ThreadScreen(viewModel: ChatViewModel) {
 
             // Which of the person's chats the next message goes out on. Tap to step through them.
             if (convo.isPerson) {
-                HapticText(
-                    text = "via " + com.gios.lightchat.people.People.networkOf(viewModel.sendTargetFor(convo)) + " ▾",
-                    style = ChatType.hint,
-                    color = ChatColors.onSurfaceDim,
-                    textAlign = TextAlign.End,
-                    onClick = viewModel::cycleReplyVia,
+                Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                )
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HapticText(
+                        text = "via ",
+                        style = ChatType.hint,
+                        color = ChatColors.onSurfaceDim,
+                        onClick = viewModel::cycleReplyVia,
+                    )
+                    Box(
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                            onClick = viewModel::cycleReplyVia,
+                        ),
+                    ) {
+                        NetworkTile(com.gios.lightchat.people.People.networkOf(viewModel.sendTargetFor(convo)))
+                    }
+                }
             }
 
             ComposeBar(

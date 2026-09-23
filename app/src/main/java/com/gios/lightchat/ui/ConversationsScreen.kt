@@ -170,10 +170,13 @@ fun ConversationsScreen(
                     // otherwise the real message text, prefixed "You: " when it's ours.
                     val said = convo.lastReaction?.summary(state.contacts)
                         ?: ((if (convo.lastFromMe) "You: " else "") + convo.lastText)
-                    // A Beeper chat says which network it is on, ahead of what was said.
-                    val subtitle = convo.network?.let { "$it · $said" } ?: said
+                    val subtitle = said
+                    // Which network the row is on, as a tile after the name. None for the default
+                    // network, and none at all with Beeper off.
+                    val network = convo.network ?: "iMessage".takeIf { state.beeperOn }
                     ConversationRow(
                         convo = convo,
+                        mark = network?.takeIf { viewModel.marks(it) },
                         title = state.contacts.title(convo),
                         subtitle = subtitle,
                         // Deleting a chat needs the Private API (server gate); only then
@@ -212,6 +215,8 @@ fun ConversationsScreen(
 @Composable
 private fun ConversationRow(
     convo: Conversation,
+    /** The network tile after the name, or null for none. */
+    mark: String? = null,
     title: String,
     subtitle: String,
     canDelete: Boolean,
@@ -327,8 +332,13 @@ private fun ConversationRow(
                     color = ChatColors.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                    modifier = if (mark != null) Modifier.weight(1f, fill = false) else Modifier.weight(1f),
                 )
+                if (mark != null) {
+                    Spacer(modifier = Modifier.width(7.dp))
+                    NetworkTile(mark)
+                    Spacer(modifier = Modifier.weight(1f))
+                }
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = listTime(LocalContext.current, convo.lastDate),

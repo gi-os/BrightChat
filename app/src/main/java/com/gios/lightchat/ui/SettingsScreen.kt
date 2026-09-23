@@ -146,6 +146,18 @@ fun SettingsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
         // ---------------------------------------------------------------------------- beeper
         SectionHeader("Beeper (beta)")
         BeeperSection()
+        if (state.beeperOn) {
+            Spacer(modifier = Modifier.height(18.dp))
+            Toggle(
+                label = "Default network: " + state.defaultNetwork,
+                hint = "Its chats show no mark in the list, and messages to a person go out on it when they have a chat there.",
+                onClick = {
+                    val known = viewModel.knownNetworks()
+                    val next = known[(known.indexOf(state.defaultNetwork) + 1).mod(known.size)]
+                    viewModel.setDefaultNetwork(next)
+                },
+            )
+        }
 
         // -------------------------------------------------------------------------- messages
         SectionHeader("Messages")

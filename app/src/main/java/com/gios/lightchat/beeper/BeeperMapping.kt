@@ -52,7 +52,7 @@ object BeeperMapping {
         "discord" to "Discord",
         "slack" to "Slack",
         "linkedin" to "LinkedIn",
-        "twitter" to "X",
+        "twitter" to "Twitter",
         "gmessages" to "SMS",
         "googlechat" to "Google Chat",
         "imessage" to "iMessage",

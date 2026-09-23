@@ -177,6 +177,12 @@ access the first time) and the call notices WhatsApp or Signal post. The **via**
 keyboard shows where the next message goes, the network they last wrote from by default; tap it
 to change. A reply always goes back to the network of the message it answers.
 
+Each chat's network shows as a small two-letter tile after the name: iM iMessage, SMS, WA
+WhatsApp, SG Signal, TG Telegram, IG Instagram, MS Messenger, DC Discord, SL Slack, IN LinkedIn,
+TW Twitter, GC Google Chat, BS Bluesky, BE Beeper. **Settings → Default network** picks the one
+you use most (iMessage to start): its chats carry no tile, and messages to a person go out on it
+when they have a chat there.
+
 The Dial tab also lists **Recent** calls under the speed dials: phone calls (named from your
 contacts) and WhatsApp or Signal call notices. Tap a phone call to ring back, or a Beeper call to
 open that chat.

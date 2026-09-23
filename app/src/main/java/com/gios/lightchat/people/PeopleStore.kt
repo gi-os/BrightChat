@@ -13,6 +13,18 @@ object PeopleStore {
     private const val PREFS = "people"
     private const val KEY_JOINED = "joined"
     private const val KEY_SPLIT = "split"
+    private const val KEY_DEFAULT = "default_network"
+
+    /**
+     * The network you mostly use. Its chats carry no mark in the list, and a person's messages go
+     * out on it when they have a chat there. iMessage until changed.
+     */
+    fun defaultNetwork(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DEFAULT, null) ?: "iMessage"
+
+    fun setDefaultNetwork(context: Context, network: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_DEFAULT, network).apply()
+    }
 
     fun load(context: Context): PeopleLinks {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

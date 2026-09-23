@@ -74,6 +74,7 @@ data class UiState(
     val links: PeopleLinks = PeopleLinks(),    // chats joined or split by hand (people/People)
     val replyVia: String? = null,              // in a person's thread, which chat the next send uses
     val calls: List<CallEntry> = emptyList(),  // the open person's calls, newest first
+    val defaultNetwork: String = "iMessage",   // unmarked in the list, and a person's default "via"
     val status: Status = Status.Idle,
     val conversations: List<Conversation> = emptyList(),
     val open: Conversation? = null,            // the currently-open thread, if any
@@ -155,6 +156,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             isConfigured = api != null || BeeperEngine.hasSession(application),
             beeperOn = BeeperEngine.hasSession(application),
             links = PeopleStore.load(application),
+            defaultNetwork = PeopleStore.defaultNetwork(application),
             canTranscribe = Store.canTranscribe(application),
             privateApi = Store.privateApi(application),
             favorites = Store.favorites(application),
@@ -279,9 +281,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun sendTargetFor(convo: Conversation): Conversation {
         if (!convo.isPerson) return convo
         val via = _state.value.replyVia
+        val default = _state.value.defaultNetwork
         return convo.members.firstOrNull { it.guid == via }
+            ?: convo.members.filter { People.networkOf(it) == default }.maxByOrNull { it.lastDate }
             ?: convo.members.filter { !it.lastFromMe }.maxByOrNull { it.lastDate }
             ?: convo.members.maxBy { it.lastDate }
+    }
+
+    /** Whether a row or a message on [network] gets a mark: never with Beeper off, never the default. */
+    fun marks(network: String?): Boolean =
+        _state.value.beeperOn && network != null && network != _state.value.defaultNetwork
+
+    /** The networks on this phone, the default's choices: iMessage first, then Beeper's. */
+    fun knownNetworks(): List<String> =
+        (listOf("iMessage") + _state.value.conversations.mapNotNull { it.network }).distinct()
+
+    fun setDefaultNetwork(network: String) {
+        PeopleStore.setDefaultNetwork(app, network)
+        _state.update { it.copy(defaultNetwork = network) }
     }
 
     /** Tapping "via …" steps to the person's next network. */
@@ -349,7 +366,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val msgs = store.messages(person.guids, limit = maxOf(MessageStore.PAGE, _state.value.threadWindow))
                 publishFetched(person.guid, msgs)
-                if (_state.value.open?.guid == person.guid && _state.value.replyVia == null) {
+                val hasDefault = person.members.any { People.networkOf(it) == _state.value.defaultNetwork }
+                if (_state.value.open?.guid == person.guid && _state.value.replyVia == null && !hasDefault) {
                     val lastIn = msgs.lastOrNull { !it.fromMe && it.room != null }
                     val via = lastIn?.let { m -> person.members.firstOrNull { m.room in it.guids } }
                     if (via != null) _state.update { it.copy(replyVia = via.guid) }
