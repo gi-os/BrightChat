@@ -123,6 +123,22 @@ object Dialer {
      * revoked from settings between one composition and the tap, and `ACTION_CALL` without it
      * is a `SecurityException` that kills the process rather than an error anybody sees.
      */
+    /**
+     * Rings voicemail: the `voicemail:` URI, which telecom sends to whatever number the carrier
+     * set for this SIM, so there is no number to know or to get wrong. False when it can't be
+     * placed (no CALL_PHONE, no telecom); the caller then opens the keypad with 1 held.
+     */
+    fun voicemail(context: Context): Boolean {
+        if (!canCallDirectly(context)) return false
+        val telecom = context.applicationContext
+            .getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return false
+        val placed = runCatching {
+            telecom.placeCall(android.net.Uri.fromParts("voicemail", "", null), Bundle())
+        }.isSuccess
+        if (placed) standAside(context)
+        return placed
+    }
+
     fun call(context: Context, address: String): Boolean {
         if (!callable(address) || !canCallDirectly(context)) return false
         val telecom = context.applicationContext

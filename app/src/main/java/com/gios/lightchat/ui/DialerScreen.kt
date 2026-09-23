@@ -119,6 +119,12 @@ fun DialerScreen(
     }
 
     var digits by remember { mutableStateOf("") }
+    // The pad folds away until it is asked for: at rest the page is the speed dials and the
+    // recent calls, which is what a call is usually made from.
+    var padOpen by remember { mutableStateOf(false) }
+    val askCallForVoicemail = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) com.gios.lightchat.Dialer.voicemail(context)
+    }
     // Read once and held in state rather than read per frame: it is a preferences parse, and the
     // two things that change it — assigning and clearing — both go through here and can say so.
     var speed by remember { mutableStateOf(Store.speedDialAll(context)) }
@@ -177,6 +183,16 @@ fun DialerScreen(
         ) {
             // No title. The pad below says what this screen is more plainly than a word could,
             // and on a 3.92" panel a header that only labels is a row of contacts given up.
+            HapticText(
+                text = "Voicemail",
+                style = ChatType.hint,
+                color = ChatColors.onSurfaceDim,
+                onClick = {
+                    if (!com.gios.lightchat.Dialer.voicemail(context)) {
+                        askCallForVoicemail.launch(Manifest.permission.CALL_PHONE)
+                    }
+                },
+            )
             Spacer(modifier = Modifier.weight(1f))
             if (digits.isNotEmpty()) {
                 HapticText(
@@ -184,6 +200,13 @@ fun DialerScreen(
                     style = ChatType.hint,
                     color = ChatColors.onSurfaceDim,
                     onClick = { digits = "" },
+                )
+            } else if (padOpen) {
+                HapticText(
+                    text = "Hide",
+                    style = ChatType.hint,
+                    color = ChatColors.onSurfaceDim,
+                    onClick = { padOpen = false },
                 )
             }
         }
@@ -325,12 +348,22 @@ fun DialerScreen(
                     )
                 }
 
-                Keypad(
-                    digits = digits,
-                    onKey = { digits += it },
-                    onHold = onHold,
-                    onBackspace = { digits = digits.dropLast(1) },
-                )
+                if (padOpen || digits.isNotEmpty()) {
+                    Keypad(
+                        digits = digits,
+                        onKey = { digits += it },
+                        onHold = onHold,
+                        onBackspace = { digits = digits.dropLast(1) },
+                    )
+                } else {
+                    HapticText(
+                        text = "Keypad",
+                        style = ChatType.body,
+                        color = ChatColors.onSurface,
+                        onClick = { padOpen = true },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                    )
+                }
             }
         }
 

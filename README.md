@@ -447,6 +447,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.46.x (nightly) | Dial tab: **Voicemail** in the corner rings your carrier voicemail; the keypad folds away until you tap **Keypad** |
 | v2.45.x (nightly) | **People** (Beeper on only): one row per person across iMessage and Beeper networks, a thread with All · iMessage · WhatsApp · Calls, "on WhatsApp" dividers, a "via" line choosing where the next message goes, call history (phone calls and bridge call notices), and Link / Unlink on the contact page. Beeper failures send a redacted log report by themselves |
 | v2.44.x (nightly) | **Beeper (beta)**: WhatsApp, Signal, Telegram, Instagram and the rest beside iMessage, in the same list and thread. Sign in from Settings or the first-run screen. Nightly channel: a push is a prerelease, `[release]` makes it official |
 | v2.43.x | Reply and Edit on their own row under the tapbacks — on one line they wrapped letter by letter |
