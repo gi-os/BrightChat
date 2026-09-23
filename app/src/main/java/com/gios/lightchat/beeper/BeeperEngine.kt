@@ -228,6 +228,7 @@ object BeeperEngine {
             configuration = configuration(),
         ).getOrElse { e ->
             note("restore failed: ${e.message}")
+            autoReport("restore the session", e)
             null
         }
         if (restored == null) {
@@ -243,7 +244,12 @@ object BeeperEngine {
         client = c
         observers?.cancel()
         observers = scope.launch {
-            launch { runCatching { c.startSync(Presence.OFFLINE) }.onFailure { note("sync failed to start: ${it.message}") } }
+            launch {
+                runCatching { c.startSync(Presence.OFFLINE) }.onFailure {
+                    note("sync failed to start: ${it.message}")
+                    autoReport("start syncing", it)
+                }
+            }
             launch { watchStatus(c) }
             launch { watchRooms(c) }
             launch { watchTimeline(c) }
@@ -376,7 +382,10 @@ object BeeperEngine {
             throw IllegalArgumentException("That recovery key doesn’t match. Check it and try again.")
         }
         throw e
-    }.onFailure { note("verify failed: ${it.message}") }
+    }.onFailure {
+        note("verify failed: ${it.message}")
+        if (it !is IllegalArgumentException) autoReport("verify with the recovery key", it)
+    }
 
     suspend fun signOut() = withContext(Dispatchers.IO) { signOutBlocking() }
 
@@ -429,6 +438,10 @@ object BeeperEngine {
 
     private suspend fun watchStatus(c: MatrixClient) {
         c.syncState.collectLatest { sync ->
+            if (sync.name.equals("ERROR", ignoreCase = true)) {
+                note("sync is failing")
+                autoReport("keep syncing", null)
+            }
             val verified = runCatching {
                 withTimeoutOrNull(5_000) { c.key.getTrustLevel(c.userId, c.deviceId).firstOrNull() }
             }.getOrNull() is DeviceTrustLevel.CrossSigned
@@ -473,12 +486,19 @@ object BeeperEngine {
             }
             val batch = ArrayList<Conversation>()
             var written = 0
+            var failedRows = 0
+            var firstRowError: Throwable? = null
             for (room in joined) {
                 val head = room.lastRelevantEventId?.full
                 val cached = rowCache[room.roomId.full]
                 if (cached != null && cached.first == head && head != null) continue
                 val row = runCatching { conversationFor(c, room) }
-                    .onFailure { if (it is CancellationException) throw it; note("row ${room.roomId.full}: ${it.message}") }
+                    .onFailure {
+                        if (it is CancellationException) throw it
+                        note("row ${room.roomId.full}: ${it.message}")
+                        failedRows++
+                        if (firstRowError == null) firstRowError = it
+                    }
                     .getOrNull() ?: continue
                 rowCache[room.roomId.full] = head to row
                 batch += row
@@ -496,6 +516,10 @@ object BeeperEngine {
             }
             if (written > 0 || gone.isNotEmpty()) {
                 note("list: $written updated, ${gone.size} removed, ${rowCache.size} chats")
+            }
+            if (failedRows > 0) {
+                note("list: $failedRows chats couldn’t be built")
+                autoReport("build the chat list", firstRowError)
             }
             (_status.value as? Status.Ready)?.let { _status.value = it.copy(rooms = rowCache.size) }
         }
@@ -829,6 +853,7 @@ object BeeperEngine {
         if (eventId == null) {
             val why = sent?.sendError?.toString() ?: "Beeper didn’t confirm it in time."
             note("send failed in ${roomId.full}: $why")
+            autoReport(if (sent == null) "send (no confirmation)" else "send (refused)", IllegalStateException(why))
             error(why)
         }
         return ChatMessage(
@@ -937,6 +962,23 @@ object BeeperEngine {
         val message = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
         note("$what: $message")
         _status.value = Status.Failed("$what: $message")
+        autoReport(what.lowercase(), t)
+    }
+
+    /** Files a report by itself; see [BeeperReports] for the throttle. Kind names the failure's family. */
+    private fun autoReport(kind: String, t: Throwable?) {
+        val ctx = appContext ?: return
+        if (!BeeperReports.shouldSend(ctx, kind)) return
+        note("sending a report: $kind")
+        val snapshot = _log.value
+        scope.launch { BeeperReports.send(ctx, kind, t, snapshot) }
+    }
+
+    /** The Settings button: send the log now, whatever the throttle says. */
+    suspend fun sendLogNow() {
+        val ctx = appContext ?: return
+        note("log sent from Settings")
+        BeeperReports.send(ctx, "log from settings", null, _log.value, manual = true)
     }
 
     fun note(line: String) {

@@ -4,6 +4,7 @@ import com.gios.lightchat.api.BlueBubblesApi
 import com.gios.lightchat.backend.Backend
 import com.gios.lightchat.backend.Caps
 import com.gios.lightchat.beeper.BeeperMapping
+import com.gios.lightchat.beeper.BeeperReports
 import com.gios.lightchat.beeper.ClaimFixEngine
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -118,5 +119,21 @@ class BeeperMappingTest {
         assertFalse(Caps.of(imessage, privateApi = false).reactions)
         assertTrue(Caps.of(imessage, privateApi = true).reactions)
         assertFalse(Caps.of(whatsapp, privateApi = true).deleteChat)
+    }
+
+    @Test fun reportsCarryNoIdentifiers() {
+        val line = "12:00:01 signed in as @gio:beeper.com; code sent to g.lupo@example.com; " +
+            "row !AbCd123:beeper.local failed on \$Xy_9zQwErTyUiOpAs01 mxc://beeper.com/abc123"
+        val out = BeeperReports.redact(line)
+        assertFalse(out.contains("gio"))
+        assertFalse(out.contains("example.com"))
+        assertFalse(out.contains("AbCd123"))
+        assertFalse(out.contains("Xy_9zQ"))
+        assertFalse(out.contains("abc123"))
+        assertTrue(out.contains("<user:"))
+        assertTrue(out.contains("<email:"))
+        assertTrue(out.contains("<room:"))
+        // Stable: the same id reads the same twice.
+        assertEquals(BeeperReports.redact("@a:b.c"), BeeperReports.redact("@a:b.c"))
     }
 }

@@ -118,6 +118,12 @@ fun BeeperSection() {
             color = ChatColors.onSurfaceDisabled,
             onClick = { showLog = !showLog },
         )
+        HapticText(
+            text = "Send log",
+            style = ChatType.hint,
+            color = ChatColors.onSurfaceDisabled,
+            onClick = { run { BeeperEngine.sendLogNow(); Result.success(Unit) } },
+        )
         if (showLog) {
             Text(
                 text = log.takeLast(40).joinToString("\n").ifEmpty { "Nothing yet." },
