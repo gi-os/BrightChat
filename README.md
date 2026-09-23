@@ -140,6 +140,30 @@ Skip this and everything else still works.
    (`GET /api/v1/server/info` shows `"private_api": true` and `"helper_connected": true`
    — the app reads this to decide whether to offer tapbacks etc.)
 
+### Beeper (beta): WhatsApp, Signal and the rest
+
+BrightChat can also sign in to a [Beeper](https://www.beeper.com) account. Chats from every
+network Beeper bridges (WhatsApp, Signal, Telegram, Instagram, Messenger, Discord and others)
+appear in the same list as iMessage. Each row names its network.
+
+1. Open **Settings → Beeper (beta)**. With no Mac set up, use **No Mac? Sign in with Beeper**
+   on the first screen instead.
+2. Type your Beeper email. Beeper emails you a six-digit code.
+3. Type the code.
+4. Type your **recovery key** (Beeper → Settings → Security). Without it, new messages arrive
+   but older ones stay encrypted.
+
+In a Beeper chat you can send text, photos, videos and files, reply, react, edit your own
+messages, and rename or leave a group. These work whether or not the Mac's Private API is on.
+
+Not yet in this release: notifications for Beeper messages, emoji verification with another
+device, emoji reactions outside the six tapbacks, and adding people to a bridged group. The
+**Show log** line under the Beeper settings shows what the connection did; include it in a bug
+report.
+
+iMessage stays on BlueBubbles. Beeper runs on the phone and talks to Beeper's servers; no Mac
+is needed for it.
+
 ### Optional features
 
 **Full-colour photo viewing.** The Light Phone's grayscale is Android's accessibility
@@ -398,6 +422,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.44.x (nightly) | **Beeper (beta)**: WhatsApp, Signal, Telegram, Instagram and the rest beside iMessage, in the same list and thread. Sign in from Settings or the first-run screen. Nightly channel: a push is a prerelease, `[release]` makes it official |
 | v2.43.x | Reply and Edit on their own row under the tapbacks — on one line they wrapped letter by letter |
 | v2.42.x | Hold your own message → Edit (Private API, 15-minute window); "Edited" under edited turns; a late receipt cannot undo an edit |
 | v2.41.x | Every "Couldn’t …" on screen also raises the SEND ERROR? chip by itself (`fail()` → `Trouble.record`) |
@@ -406,6 +431,11 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 ## Licence
 
 [MIT](LICENSE).
+
+The Beeper login flow, the `/keys/claim` repair and the recovery-key verification are adapted
+from [fenleon/chats](https://github.com/fenleon/chats) and
+[Beeper4LightOS](https://github.com/ironfeet/Beeper4LightOS), both MIT. Matrix is
+[Trixnity](https://gitlab.com/connect2x/trixnity) (Apache-2.0).
 
 ---
 

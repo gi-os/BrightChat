@@ -356,6 +356,9 @@ object BeeperEngine {
             .checkOwnAdvertisedMasterKeyAndVerifySelf(keyBytes, keyId, keyInfo)
             .getOrThrow()
         note("verified with the recovery key")
+        (_status.value as? Status.Ready)?.let { _status.value = it.copy(verified = true) }
+        // Heads that couldn't be decrypted before can be now.
+        invalidateRows()
         Unit
     }.recoverCatching { e ->
         val detail = e.message.orEmpty()
@@ -427,38 +430,60 @@ object BeeperEngine {
     }
 
     /**
-     * Keeps the Beeper rows of the conversation list current. Debounced: an initial sync of a
-     * busy account changes hundreds of rooms in a burst, and one pass after it settles is enough.
-     * A room is only rebuilt when its newest message changed.
+     * Keeps the Beeper rows of the conversation list current.
+     *
+     * Debounced: an initial sync of a busy account adds hundreds of rooms in a burst, and one pass
+     * after it settles is enough. Newest rooms first, and written in batches, so the chats you
+     * care about appear in seconds even when the pass takes minutes on a large account. A room is
+     * only rebuilt when its newest message changed, so a pass that was cancelled by the next burst
+     * resumes where it stopped instead of starting over.
+     *
+     * `getAll()` only re-emits when rooms come or go, not when one gets a message, so a live event
+     * drops its room from [rowCache] and bumps [rewrite] (see [emitLive]).
      */
     private suspend fun watchRooms(c: MatrixClient) {
         combine(c.room.getAll(), rewrite) { rooms, _ -> rooms }.collectLatest { rooms ->
             delay(1_500)
             val ctx = appContext ?: return@collectLatest
-            val changed = ArrayList<Conversation>()
-            val live = HashSet<String>()
-            for ((roomId, flow) in rooms) {
-                val room = runCatching { withTimeoutOrNull(2_000) { flow.firstOrNull() } }.getOrNull() ?: continue
-                if (room.membership != Membership.JOIN) continue
-                if (room.createEventContent?.type is CreateEventContent.RoomType.Space) continue
-                live += roomId.full
-                val head = room.lastRelevantEventId?.full
-                val cached = rowCache[roomId.full]
-                if (cached != null && cached.first == head && head != null) continue
-                val row = runCatching { conversationFor(c, room) }
-                    .onFailure { note("row ${roomId.full}: ${it.message}") }
-                    .getOrNull() ?: continue
-                rowCache[roomId.full] = head to row
-                changed += row
-            }
+            val store = MessageStore.get(ctx)
+            val joined = rooms.values.mapNotNull { flow ->
+                runCatching { withTimeoutOrNull(2_000) { flow.firstOrNull() } }.getOrNull()
+            }.filter { room ->
+                room.membership == Membership.JOIN &&
+                    room.createEventContent?.type !is CreateEventContent.RoomType.Space
+            }.sortedByDescending { it.lastRelevantEventTimestamp }
+            val live = joined.mapTo(HashSet()) { it.roomId.full }
             val gone = rowCache.keys.filter { it !in live }
             gone.forEach { rowCache.remove(it) }
-            val store = MessageStore.get(ctx)
-            if (gone.isNotEmpty()) store.deleteChat(gone.map(BeeperMapping::roomGuid))
-            if (changed.isNotEmpty()) store.putChats(changed)
-            if (changed.isNotEmpty() || gone.isNotEmpty()) {
-                note("list: ${changed.size} updated, ${gone.size} removed, ${rowCache.size} rooms")
+            if (gone.isNotEmpty()) {
+                store.deleteChat(gone.map(BeeperMapping::roomGuid))
                 _changes.tryEmit(Unit)
+            }
+            val batch = ArrayList<Conversation>()
+            var written = 0
+            for (room in joined) {
+                val head = room.lastRelevantEventId?.full
+                val cached = rowCache[room.roomId.full]
+                if (cached != null && cached.first == head && head != null) continue
+                val row = runCatching { conversationFor(c, room) }
+                    .onFailure { if (it is CancellationException) throw it; note("row ${room.roomId.full}: ${it.message}") }
+                    .getOrNull() ?: continue
+                rowCache[room.roomId.full] = head to row
+                batch += row
+                if (batch.size >= 20) {
+                    store.putChats(batch)
+                    written += batch.size
+                    batch.clear()
+                    _changes.tryEmit(Unit)
+                }
+            }
+            if (batch.isNotEmpty()) {
+                store.putChats(batch)
+                written += batch.size
+                _changes.tryEmit(Unit)
+            }
+            if (written > 0 || gone.isNotEmpty()) {
+                note("list: $written updated, ${gone.size} removed, ${rowCache.size} chats")
             }
             (_status.value as? Status.Ready)?.let { _status.value = it.copy(rooms = rowCache.size) }
         }
@@ -498,6 +523,9 @@ object BeeperEngine {
         }
         val row = rowFor(c, target) ?: return
         val convo = rowCache[roomId.full]?.second
+        // The list row for this room is now out of date; the next pass rebuilds just it.
+        rowCache[roomId.full]?.let { (_, cachedRow) -> rowCache[roomId.full] = null to cachedRow }
+        rewrite.value = rewrite.value + 1
         SocketBus.incoming.tryEmit(
             IncomingMessage(
                 chatGuid = BeeperMapping.roomGuid(roomId.full),
@@ -525,13 +553,15 @@ object BeeperEngine {
         val isGroup = !room.isDirect && (members.size > 1 || (room.name?.otherUsersCount ?: 0) > 1)
         val network = BeeperMapping.networkOfRoom(members.map { it.full }, c.userId.full)
 
+        // Short on purpose: on a new device most heads can't be decrypted until the key backup is
+        // unlocked, and a long wait per room is minutes before the list shows anything.
         val head = room.lastRelevantEventId?.let { id ->
-            withTimeoutOrNull(4_000) {
+            withTimeoutOrNull(1_500) {
                 c.room.getTimelineEvent(roomId, id) {
-                    decryptionTimeout = 3.seconds
-                    fetchTimeout = 3.seconds
-                }.filterNotNull().firstOrNull { it.content != null } ?: c.room.getTimelineEvent(roomId, id).firstOrNull()
-            }
+                    decryptionTimeout = 1.seconds
+                    fetchTimeout = 1.seconds
+                }.filterNotNull().firstOrNull { it.content != null }
+            } ?: withTimeoutOrNull(500) { c.room.getTimelineEvent(roomId, id).firstOrNull() }
         }
         val headRow = head?.let { rowFor(c, it) }
         val lastDate = head?.originTimestamp ?: room.lastRelevantEventTimestamp?.toEpochMilliseconds() ?: 0L

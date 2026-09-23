@@ -13,7 +13,18 @@ on:
     paths-ignore:
       - '**.md'
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'nightly (prerelease) or official (latest)'
+        type: choice
+        options: [nightly, official]
+        default: official
 
+# Two channels, same shape as BrightMarket's. A push publishes a **nightly**: tagged
+# `nightly-<version>`, marked prerelease and never "latest", so Obtainium and the BrightMarket index
+# (which skip prereleases) don't offer it to anyone who hasn't opted in. An **official** build is
+# asked for: `[release]` in the commit's subject line (the first line only, so a body that merely
+# mentions the word can't ship one), or a manual run with channel=official.
 permissions:
   contents: write   # needed to create the Release
   packages: read
@@ -41,6 +52,23 @@ jobs:
 
       # versionCode is the workflow run number, so every push produces a newer build
       # and `adb install -r` (and Obtainium) upgrade in place instead of erroring.
+      - name: Pick channel
+        id: channel
+        env:
+          SUBJECT: ${{ github.event.head_commit.message }}
+          DISPATCHED: ${{ inputs.channel }}
+        run: |
+          FIRST=$(printf '%s' "$SUBJECT" | head -1)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CH="${DISPATCHED:-official}"
+          elif printf '%s' "$FIRST" | grep -qF '[release]'; then
+            CH=official
+          else
+            CH=nightly
+          fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "channel: $CH"
+
       - name: Stamp version
         id: ver
         run: |
@@ -145,11 +173,12 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: LightChat v${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.channel.outputs.channel == 'official' && 'v' || 'nightly-' }}${{ steps.ver.outputs.version }}
+          name: ${{ steps.channel.outputs.channel == 'official' && 'LightChat v' || 'BrightChat nightly ' }}${{ steps.ver.outputs.version }}
           files: out/LightChat-v${{ steps.ver.outputs.version }}.apk
           generate_release_notes: true
-          make_latest: true
+          prerelease: ${{ steps.channel.outputs.channel != 'official' }}
+          make_latest: ${{ steps.channel.outputs.channel == 'official' && 'true' || 'false' }}
           fail_on_unmatched_files: true
 
       # Tell the index a release exists instead of waiting for its cron. GitHub

@@ -75,6 +75,9 @@ class SocketService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
         )
         connect()
+        // The Beeper session syncs inside this process; starting it here keeps WhatsApp and the
+        // rest current while the app itself isn't open. A no-op without a Beeper account.
+        com.gios.lightchat.beeper.BeeperEngine.start(this)
         startWatchdog()
         watchForWake()
         watchForNetwork()
