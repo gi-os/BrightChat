@@ -58,7 +58,15 @@ data class Conversation(
     // The network a Beeper chat lives on ("WhatsApp", "Signal"…). Null for iMessage, which is
     // everything BlueBubbles serves. See beeper/BeeperMapping.
     val network: String? = null,
+    // The chats this row stands for when one person is reached on several networks (iMessage and
+    // WhatsApp, say). Empty for an ordinary chat. Built for display by people/People; never
+    // stored. See [isPerson].
+    val members: List<Conversation> = emptyList(),
 ) {
+    /** A person joined across networks: one row, one thread, several chats underneath. */
+    val isPerson: Boolean
+        get() = members.size > 1
+
     /** A chat served by the Beeper backend rather than BlueBubbles. Its guid is `mx:!room:…`. */
     val isBeeper: Boolean
         get() = guid.startsWith(com.gios.lightchat.beeper.BeeperMapping.GUID_PREFIX)
@@ -254,6 +262,13 @@ data class ChatMessage(
     // "Edited" mark under a turn and to keep our own edit from being undone by the
     // socket echo that follows it — see ChatViewModel.editMessage.
     val dateEdited: Long = 0,
+    // The room this message was stored or received under. Only read in a joined person's thread,
+    // where one list holds several chats and a reply, a tapback or an edit has to go back to the
+    // chat the message came from. Null on a row nobody has tagged (an optimistic send).
+    val room: String? = null,
+    // A call notice a Beeper bridge posted ("Missed voice call"). Drawn as a centred line, and
+    // listed under Calls in a person's thread. Never true for iMessage.
+    val isCall: Boolean = false,
 ) {
     val images: List<Attachment> get() = attachments.filter { it.isImage }
 

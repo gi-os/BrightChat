@@ -668,6 +668,7 @@ object BeeperEngine {
                     files = files,
                     replyTo = reply,
                     editedAt = if (te.isReplaced) event.originTimestamp + 1 else 0L,
+                    isCall = content is RoomMessageEventContent.TextBased.Notice && BeeperMapping.isCallNotice(content.body),
                 )
             }
             is ReactionEventContent -> {

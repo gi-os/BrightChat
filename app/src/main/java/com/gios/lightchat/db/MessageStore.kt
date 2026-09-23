@@ -152,7 +152,7 @@ class MessageStore private constructor(context: Context) {
             .use { c ->
                 while (c.moveToNext()) {
                     val parsed = runCatching { BlueBubblesApi.parseMessage(JSONObject(c.getString(0))) }
-                    parsed.getOrNull()?.let { out.add(it) }
+                    parsed.getOrNull()?.let { out.add(it.copy(room = chatGuid)) }
                 }
             }
         return out.asReversed()

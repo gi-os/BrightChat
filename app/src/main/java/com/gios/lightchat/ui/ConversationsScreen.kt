@@ -89,15 +89,20 @@ fun ConversationsScreen(
     WheelScroll(listState)
 
     // Partitioned once per list/contacts/favorites change, not per row.
-    val visible = remember(state.conversations, state.contacts, state.favorites, state.pins, tab) {
-        val onTab = state.conversations.filter { tabOf(it, state.contacts, state.favorites) == tab }
+    // One row per person when Beeper is on (a person on iMessage and WhatsApp is one row);
+    // exactly the list otherwise. See people/People.
+    val listed = remember(state.conversations, state.contacts, state.favorites, state.links, state.beeperOn) {
+        viewModel.displayed(state)
+    }
+    val visible = remember(listed, state.contacts, state.favorites, state.pins, tab) {
+        val onTab = listed.filter { tabOf(it, state.contacts, state.favorites) == tab }
         // Pins only mean anything on Favorites. A pin is an order *within* the starred list, and
         // applying it to Messages would move a chat above conversations that are simply newer —
         // which is the one thing that list promises not to do.
         if (tab == ConversationTab.Favorites) Pins.order(onTab, state.pins) else onTab
     }
-    val unreadTabs = remember(state.conversations, state.contacts, state.favorites) {
-        state.conversations
+    val unreadTabs = remember(listed, state.contacts, state.favorites) {
+        listed
             .filter { it.unread }
             .mapTo(mutableSetOf()) { tabOf(it, state.contacts, state.favorites) }
     }

@@ -15,6 +15,11 @@ import com.gios.lightchat.api.BlueBubblesApi
 import com.gios.lightchat.backend.Caps
 import com.gios.lightchat.beeper.BeeperEngine
 import com.gios.lightchat.beeper.BeeperMapping
+import com.gios.lightchat.people.CallEntry
+import com.gios.lightchat.people.CallHistory
+import com.gios.lightchat.people.People
+import com.gios.lightchat.people.PeopleLinks
+import com.gios.lightchat.people.PeopleStore
 import com.gios.lightchat.api.Store
 import com.gios.lightchat.api.WhisperApi
 import com.gios.lightchat.dial.AddressBookRepo
@@ -63,6 +68,12 @@ private const val DETAILS_PAGE = 200
 
 data class UiState(
     val isConfigured: Boolean,                 // a server URL and password are stored
+    // Beeper is signed in on this phone. Everything person-shaped (one row per person, the
+    // network strip, calls) is drawn only then, so an iMessage-only phone sees no change.
+    val beeperOn: Boolean = false,
+    val links: PeopleLinks = PeopleLinks(),    // chats joined or split by hand (people/People)
+    val replyVia: String? = null,              // in a person's thread, which chat the next send uses
+    val calls: List<CallEntry> = emptyList(),  // the open person's calls, newest first
     val status: Status = Status.Idle,
     val conversations: List<Conversation> = emptyList(),
     val open: Conversation? = null,            // the currently-open thread, if any
@@ -142,6 +153,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(
         UiState(
             isConfigured = api != null || BeeperEngine.hasSession(application),
+            beeperOn = BeeperEngine.hasSession(application),
+            links = PeopleStore.load(application),
             canTranscribe = Store.canTranscribe(application),
             privateApi = Store.privateApi(application),
             favorites = Store.favorites(application),
@@ -236,6 +249,157 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** What the conversation's backend can do. Screens ask this instead of reading privateApi. */
     fun caps(conversation: Conversation?): Caps = Caps.of(conversation, _state.value.privateApi)
 
+    // ---- People (one row per person across networks) --------------------
+
+    /**
+     * The list as the screens draw it. With Beeper off it is the list, untouched. With Beeper on,
+     * a person's chats on several networks are one row (see people/People).
+     */
+    fun displayed(s: UiState): List<Conversation> =
+        if (!s.beeperOn) s.conversations
+        else People.merge(s.conversations, { nameFor(it, s.contacts) }, s.links, s.favorites)
+
+    private fun nameFor(c: Conversation, contacts: Contacts): String? =
+        if (c.isBeeper) c.displayName.takeIf { it.isNotBlank() && it != "Chat" }
+        else c.participants.singleOrNull()?.let { contacts.name(it) }
+
+    /** The member chat a message in a person's thread belongs to. The chat itself otherwise. */
+    fun memberFor(convo: Conversation, message: ChatMessage): Conversation {
+        if (!convo.isPerson) return convo
+        val room = message.room
+        return convo.members.firstOrNull { room != null && room in it.guids } ?: sendTargetFor(convo)
+    }
+
+    /** What can be done to [message]: asked of the chat it came from, not of the person row. */
+    fun capsFor(convo: Conversation, message: ChatMessage): Caps = caps(memberFor(convo, message))
+
+    fun networkOf(convo: Conversation, message: ChatMessage): String = People.networkOf(memberFor(convo, message))
+
+    /** Where the next send goes: the chat picked with "via", else the one they last wrote from. */
+    fun sendTargetFor(convo: Conversation): Conversation {
+        if (!convo.isPerson) return convo
+        val via = _state.value.replyVia
+        return convo.members.firstOrNull { it.guid == via }
+            ?: convo.members.filter { !it.lastFromMe }.maxByOrNull { it.lastDate }
+            ?: convo.members.maxBy { it.lastDate }
+    }
+
+    /** Tapping "via …" steps to the person's next network. */
+    fun cycleReplyVia() {
+        val convo = _state.value.open ?: return
+        if (!convo.isPerson) return
+        val current = sendTargetFor(convo)
+        val next = convo.members[(convo.members.indexOf(current) + 1) % convo.members.size]
+        _state.update { it.copy(replyVia = next.guid) }
+    }
+
+    /** Joins two chats as one person, by hand, and reopens the thread as that person. */
+    fun linkChats(a: String, b: String) {
+        val next = _state.value.links.join(a, b)
+        PeopleStore.save(app, next)
+        _state.update { it.copy(links = next) }
+        reopenAsPerson(a)
+    }
+
+    /** Splits a chat off a person. A later automatic match won't rejoin it. */
+    fun unlinkChat(person: Conversation, member: String) {
+        var next = _state.value.links
+        person.members.filter { it.guid != member }.forEach { other -> next = next.unjoin(member, other.guid) }
+        PeopleStore.save(app, next)
+        _state.update { it.copy(links = next) }
+        reopenAsPerson(person.members.first { it.guid != member }.guid)
+    }
+
+    private fun reopenAsPerson(anyGuid: String) {
+        val target = displayed(_state.value).firstOrNull { anyGuid in it.guids } ?: return
+        closeThread()
+        open(target)
+    }
+
+    /** The person's calls: phone history for their numbers, and Beeper call notices. */
+    fun reloadCalls() {
+        val convo = _state.value.open ?: return
+        viewModelScope.launch(Dispatchers.IO) { refreshCalls(convo, store.messages(convo.guids, limit = 400)) }
+    }
+
+    private fun refreshCalls(convo: Conversation, messages: List<ChatMessage>) {
+        val numbers = convo.members.ifEmpty { listOf(convo) }.filter { !it.isBeeper }.flatMap { it.participants }
+        val calls = CallHistory.merged(
+            CallHistory.phoneCalls(app, numbers),
+            CallHistory.networkCalls(messages) { networkOf(convo, it) },
+        )
+        _state.update { if (it.open?.guid == convo.guid) it.copy(calls = calls) else it }
+    }
+
+    /** A person's thread: every member chat fetched from its own backend, shown as one list. */
+    private fun loadPersonThread(person: Conversation) {
+        threadJob?.cancel()
+        threadJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val onDisk = store.messages(person.guids, limit = MessageStore.PAGE)
+                if (onDisk.isNotEmpty()) publishFetched(person.guid, onDisk)
+                for (member in person.members) {
+                    try {
+                        if (member.isBeeper) BeeperEngine.thread(member.guid) else sync?.thread(member)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (t: Throwable) {
+                        android.util.Log.w("ChatViewModel", "person thread: ${member.guid.take(12)} failed", t)
+                    }
+                }
+                val msgs = store.messages(person.guids, limit = maxOf(MessageStore.PAGE, _state.value.threadWindow))
+                publishFetched(person.guid, msgs)
+                if (_state.value.open?.guid == person.guid && _state.value.replyVia == null) {
+                    val lastIn = msgs.lastOrNull { !it.fromMe && it.room != null }
+                    val via = lastIn?.let { m -> person.members.firstOrNull { m.room in it.guids } }
+                    if (via != null) _state.update { it.copy(replyVia = via.guid) }
+                }
+                refreshCalls(person, store.messages(person.guids, limit = 400))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _state.update { if (it.open?.guid == person.guid) it.copy(threadLoading = false) else it }
+                fail("Couldn’t load that chat", t)
+            }
+        }
+    }
+
+    /** [loadOlder] for a person: each member chat pages back from its own oldest message. */
+    private fun loadOlderPerson(person: Conversation) {
+        if (_state.value.loadingOlder || _state.value.historyExhausted) return
+        if (_state.value.threadLoading || threadJob?.isActive == true) return
+        val held = openRaw.filterNot { it.guid.startsWith("temp-") }
+        if (held.isEmpty()) return
+        val oldestByMember = person.members.associate { m ->
+            m.guid to held.filter { it.room != null && it.room in m.guids }.minByOrNull { it.date }?.guid
+        }
+        val window = _state.value.threadWindow + MessageStore.PAGE
+        _state.update { it.copy(loadingOlder = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            var any = false
+            for (member in person.members) {
+                runCatching {
+                    if (member.isBeeper) {
+                        val before = oldestByMember[member.guid] ?: return@runCatching
+                        if (BeeperEngine.thread(member.guid, beforeEventId = before).isNotEmpty()) any = true
+                    } else {
+                        if (sync?.olderThan(member, window) != null) any = true
+                    }
+                }
+            }
+            if (_state.value.open?.guid != person.guid) {
+                _state.update { it.copy(loadingOlder = false) }
+                return@launch
+            }
+            if (!any) {
+                _state.update { it.copy(loadingOlder = false, historyExhausted = true) }
+                return@launch
+            }
+            publishFetched(person.guid, store.messages(person.guids, limit = window), clearLoading = false)
+            _state.update { it.copy(loadingOlder = false, threadWindow = window) }
+        }
+    }
+
     /**
      * Beeper writes its rows into the same store BlueBubbles does; this re-reads them into the list
      * whenever it says they changed, and marks the app configured the first time a Beeper account
@@ -247,6 +411,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             BeeperEngine.status.collect { status ->
+                val on = status !is BeeperEngine.Status.SignedOut && BeeperEngine.hasSession(app)
+                if (on != _state.value.beeperOn) _state.update { it.copy(beeperOn = on) }
                 if (status is BeeperEngine.Status.Ready && !_state.value.isConfigured) {
                     _state.update { it.copy(isConfigured = true, status = Status.Ready) }
                     reloadBeeperRows()
@@ -426,6 +592,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  no "Loading…", no scroll change, the cached list stays on screen until the fresh
      *  one lands. */
     private fun reopenThread(conversation: Conversation) {
+        if (conversation.isPerson) {
+            loadPersonThread(conversation)
+            return
+        }
         if (conversation.isBeeper) {
             loadBeeperThread(conversation, messageCache[conversation.guid], showDisk = false)
             return
@@ -567,7 +737,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * is queued and fires when [loadConversations] lands.
      */
     fun openByGuid(chatGuid: String) {
-        val convo = _state.value.conversations.firstOrNull { chatGuid in it.guids }
+        // The list as drawn, so a notification for Alex's WhatsApp opens Alex, not one half of him.
+        val convo = displayed(_state.value).firstOrNull { chatGuid in it.guids }
         if (convo != null) {
             open(convo)
         } else {
@@ -587,7 +758,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // The in-memory cache is free and renders this frame. The on-disk one is read a
         // moment later, in the thread job — parsing fifty messages and their attachment
         // metadata is not something to do on the frame that handles the tap.
-        val cached = messageCache[conversation.guid]
+        // A person's thread shares its guid with one of its member chats, so the member's cache
+        // would be the wrong list; it reads the store instead.
+        val cached = if (conversation.isPerson) null else messageCache[conversation.guid]
         // On the thread that owns openRaw, so that opening a chat can't interleave with a send
         // or a landing fetch and leave the two disagreeing about which conversation is on
         // screen. `open` is called from IO in four places (a notification tap during a load, and
@@ -610,10 +783,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 historyExhausted = false,
                 // Every thread starts showing its newest page and grows as it is scrolled.
                 threadWindow = MessageStore.PAGE,
+                replyVia = null,
+                calls = emptyList(),
             )
         }
         conversation.guids.forEach { markReadIfPrivate(it) }
         clearUnread(conversation.guid)
+        conversation.members.forEach { clearUnread(it.guid) }
         Notifications.clearChat(app, conversation.guids)
         // Opening the thread is what "you've seen it" means, so mark any alert being held
         // for it seen — otherwise leaving the app would post a notification for the message
@@ -624,6 +800,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         AppForeground.visibleChatGuids = conversation.guids.toSet()
         // A share that arrived without a recipient was waiting for exactly this.
         flushPendingShared()
+        if (conversation.isPerson) {
+            loadPersonThread(conversation)
+            return
+        }
         if (conversation.isBeeper) {
             loadBeeperThread(conversation, cached, showDisk = true)
             return
@@ -670,6 +850,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun loadOlder() {
         val conversation = _state.value.open ?: return
+        if (conversation.isPerson) {
+            loadOlderPerson(conversation)
+            return
+        }
         if (conversation.isBeeper) {
             loadOlderBeeper(conversation)
             return
@@ -925,8 +1109,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // that owns openRaw, or the snapshot can be of a list a landing fetch was midway
         // through replacing — which cached one conversation's messages under another's guid.
         _state.value.open?.let {
-            messageCache[it.guid] = openRaw
-            finishTyping(it.guid) // don't leave a typing bubble up after leaving
+            if (!it.isPerson) messageCache[it.guid] = openRaw
+            finishTyping(sendTargetFor(it).guid) // don't leave a typing bubble up after leaving
         }
         openRaw = emptyList()
         threadJob?.cancel()
@@ -1293,25 +1477,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val body = text.trim()
         val convo = _state.value.open ?: return
         if (body.isEmpty()) return
-        finishTyping(convo.guid) // sending clears our typing bubble
-        val reply = replyToGuid?.takeIf { caps(convo).replies && !it.startsWith("temp-") }
+        // In a person's thread a reply goes back to the chat its message came from; anything else
+        // goes where "via" points. For an ordinary chat both are the chat itself.
+        val replyTo = replyToGuid?.let { g -> openRaw.firstOrNull { it.guid == g } }
+        val target = if (convo.isPerson && replyTo != null) memberFor(convo, replyTo) else sendTargetFor(convo)
+        finishTyping(target.guid) // sending clears our typing bubble
+        val reply = replyToGuid?.takeIf { caps(target).replies && !it.startsWith("temp-") }
         // Optimistic: show it immediately under a temp guid, then swap in the
         // server's echo (real guid) so the socket's new-message dedupes cleanly.
         val tempGuid = newTempGuid()
         val optimistic = ChatMessage(
             tempGuid, body, System.currentTimeMillis(), fromMe = true, sender = null,
             threadOriginatorGuid = reply,
+            room = target.guid.takeIf { convo.isPerson },
         )
         updateOpenThread(convo.guid) { it + optimistic }
         _state.update { it.copy(message = null) }
         viewModelScope.launch(Dispatchers.IO) {
-            if (convo.isBeeper) {
-                performBeeperSend(convo, tempGuid, "Couldn’t send") {
-                    BeeperEngine.sendText(convo.guid, body, reply, tempGuid)
+            if (target.isBeeper) {
+                performBeeperSend(target, tempGuid, "Couldn’t send") {
+                    BeeperEngine.sendText(target.guid, body, reply, tempGuid)
                 }
                 return@launch
             }
-            performSend(convo, tempGuid, "Couldn’t send") { client, g, method ->
+            performSend(target, tempGuid, "Couldn’t send") { client, g, method ->
                 client.send(g, body, tempGuid, method, reply)
             }
         }
@@ -1345,10 +1534,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun editMessage(target: ChatMessage, newText: String) {
         val body = newText.trim()
         val convo = _state.value.open ?: return
-        if (!caps(convo).edits || !canEdit(target)) return
+        val member = memberFor(convo, target)
+        if (!caps(member).edits || !canEdit(target)) return
         if (body.isEmpty() || body == target.text) return
         val client = api
-        if (client == null && !convo.isBeeper) return
+        if (client == null && !member.isBeeper) return
         val before = target.text
         val stamp = System.currentTimeMillis()
         updateOpenThread(convo.guid) { list ->
@@ -1357,8 +1547,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         previewEdited(convo, target, body)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val edited = if (convo.isBeeper) {
-                    BeeperEngine.edit(convo.guid, target.guid, body)
+                val edited = if (member.isBeeper) {
+                    BeeperEngine.edit(member.guid, target.guid, body)
                     target.copy(text = body, dateEdited = stamp)
                 } else {
                     requireNotNull(client).edit(target.guid, body)
@@ -1409,7 +1599,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun sendReaction(target: ChatMessage, type: ReactionType) {
         val convo = _state.value.open ?: return
-        if (!caps(convo).reactions) return
+        val member = memberFor(convo, target)
+        if (!caps(member).reactions) return
         if (target.guid.startsWith("temp-")) {
             _state.update { it.copy(message = "Still sending — try again in a moment") }
             return
@@ -1428,7 +1619,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         // Matrix takes a reaction back by redacting the reaction event, so find ours now, on the
         // thread that owns openRaw.
-        val mineToRedact = if (convo.isBeeper && removing) {
+        val mineToRedact = if (member.isBeeper && removing) {
             openRaw.lastOrNull {
                 it.isReaction && it.fromMe && !it.isReactionRemoval &&
                     it.reactionTargetGuid == target.guid && it.reactionType == type &&
@@ -1439,13 +1630,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         updateOpenThread(convo.guid) { it + optimistic }
         viewModelScope.launch(Dispatchers.IO) {
-            if (convo.isBeeper) {
+            if (member.isBeeper) {
                 try {
                     if (removing) {
-                        if (mineToRedact != null) BeeperEngine.redact(convo.guid, mineToRedact)
+                        if (mineToRedact != null) BeeperEngine.redact(member.guid, mineToRedact)
                         reconcileEcho(convo.guid, tempGuid, optimistic.copy(guid = "removed-" + tempGuid))
                     } else {
-                        val sent = BeeperEngine.react(convo.guid, target.guid, type)
+                        val sent = BeeperEngine.react(member.guid, target.guid, type)
                         reconcileEcho(convo.guid, tempGuid, sent)
                     }
                 } catch (t: Throwable) {
@@ -1455,7 +1646,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             val client = api ?: return@launch
             try {
-                val sent = client.react(convo.guid, target.guid, apiValue)
+                val sent = client.react(member.guid, target.guid, apiValue)
                 reconcileEcho(convo.guid, tempGuid, sent)
             } catch (t: Throwable) {
                 rollbackOptimistic(convo.guid, tempGuid, "Couldn’t react")
@@ -1997,13 +2188,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // several files land in the thread in the order they were picked. It also means
         // a big clip holds up the ones behind it, which is the correct trade — the
         // alternative is a parallel upload competing for the same tunnel.
-        if (convo.isBeeper) {
-            performBeeperSend(convo, tempGuid, "Couldn’t send ${kindOf(file)}") {
-                BeeperEngine.sendMedia(convo.guid, file.readBytes(), file.name, mime, tempGuid)
+        val target = sendTargetFor(convo)
+        if (target.isBeeper) {
+            performBeeperSend(target, tempGuid, "Couldn’t send ${kindOf(file)}") {
+                BeeperEngine.sendMedia(target.guid, file.readBytes(), file.name, mime, tempGuid)
             }
             return
         }
-        performSend(convo, tempGuid, "Couldn’t send video") { client, g, method ->
+        performSend(target, tempGuid, "Couldn’t send video") { client, g, method ->
             client.sendAttachment(g, file, file.name, mime, tempGuid, method)
         }
     }
@@ -2039,13 +2231,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(message = null) }
         // Blocking, deliberately: sendImageFiles loops over this on one IO coroutine
         // so several photos land in the thread in the order they were picked.
-        if (convo.isBeeper) {
-            performBeeperSend(convo, tempGuid, "Couldn’t send image") {
-                BeeperEngine.sendMedia(convo.guid, img.bytes, img.name, img.mime, tempGuid)
+        val target = sendTargetFor(convo)
+        if (target.isBeeper) {
+            performBeeperSend(target, tempGuid, "Couldn’t send image") {
+                BeeperEngine.sendMedia(target.guid, img.bytes, img.name, img.mime, tempGuid)
             }
             return
         }
-        performSend(convo, tempGuid, "Couldn’t send image") { client, g, method ->
+        performSend(target, tempGuid, "Couldn’t send image") { client, g, method ->
             client.sendAttachment(g, img.bytes, img.name, img.mime, tempGuid, method)
         }
     }
@@ -2823,7 +3016,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  typing on the first keystroke and schedules an auto-stop after a pause; an
      *  empty field stops immediately. No-op unless the Private API is live. */
     fun onComposeTextChanged(text: String) {
-        val open = _state.value.open ?: return
+        val open = _state.value.open?.let(::sendTargetFor) ?: return
         if (!caps(open).typing) return
         val guid = open.guid
         if (text.isBlank()) {

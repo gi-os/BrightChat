@@ -164,6 +164,21 @@ report.
 iMessage stays on BlueBubbles. Beeper runs on the phone and talks to Beeper's servers; no Mac
 is needed for it.
 
+**One row per person.** With Beeper signed in, a person you talk to on iMessage and WhatsApp (or
+any two networks) is one row. BrightChat joins two chats only when both are one-to-ones, both
+resolve to the same full name (the address book's name for the iMessage chat, the network's name
+for the Beeper one), they are on different networks, and no network has two chats with that
+name. Anything else stays separate until you join it: open the chat, tap the name, then
+**Link another chat**. **Unlink** on the same page splits a chat off, and it stays split.
+
+In a person's thread the line under the name picks what you see: **All**, one network, or
+**Calls**. Calls lists the phone's own calls with that person (BrightChat asks for call-history
+access the first time) and the call notices WhatsApp or Signal post. The **via** line above the
+keyboard shows where the next message goes, the network they last wrote from by default; tap it
+to change. A reply always goes back to the network of the message it answers.
+
+Without Beeper none of this appears, and the app looks and works as before.
+
 ### Optional features
 
 **Full-colour photo viewing.** The Light Phone's grayscale is Android's accessibility
@@ -422,6 +437,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.45.x (nightly) | **People** (Beeper on only): one row per person across iMessage and Beeper networks, a thread with All · iMessage · WhatsApp · Calls, "on WhatsApp" dividers, a "via" line choosing where the next message goes, call history (phone calls and bridge call notices), and Link / Unlink on the contact page. Beeper failures send a redacted log report by themselves |
 | v2.44.x (nightly) | **Beeper (beta)**: WhatsApp, Signal, Telegram, Instagram and the rest beside iMessage, in the same list and thread. Sign in from Settings or the first-run screen. Nightly channel: a push is a prerelease, `[release]` makes it official |
 | v2.43.x | Reply and Edit on their own row under the tapbacks — on one line they wrapped letter by letter |
 | v2.42.x | Hold your own message → Edit (Private API, 15-minute window); "Edited" under edited turns; a late receipt cannot undo an edit |

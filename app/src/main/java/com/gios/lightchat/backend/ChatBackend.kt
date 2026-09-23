@@ -96,6 +96,9 @@ data class Caps(
 
         fun of(conversation: Conversation?, privateApi: Boolean): Caps = when {
             conversation == null -> if (privateApi) PRIVATE_API else BASIC
+            // A joined person: per-message verbs are asked of the member chat each message came
+            // from (ChatViewModel.capsFor). The row itself can't be deleted, it is several chats.
+            conversation.isPerson -> BEEPER.copy(groupRename = false)
             conversation.isAgent -> BASIC.copy(deleteChat = true)
             conversation.isBeeper -> BEEPER
             privateApi -> PRIVATE_API

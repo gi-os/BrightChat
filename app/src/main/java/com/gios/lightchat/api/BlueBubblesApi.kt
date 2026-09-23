@@ -943,6 +943,8 @@ class BlueBubblesApi(private val baseUrl: String, private val password: String) 
                 tempGuid = o.optString("tempGuid").takeIf { it.isNotBlank() && it != "null" },
                 // Explicit JSON null on an unedited message; optLong treats it as absent.
                 dateEdited = o.optLong("dateEdited", 0L),
+                // Only Beeper rows carry it (see beeper/BeeperMapping).
+                isCall = o.optBoolean("isCallEvent", false),
             )
         }
 

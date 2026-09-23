@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- The Calls list in a person's thread (Beeper on only): the phone's own call history,
+         read for that person's numbers. Asked for when Calls is first opened. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Lifts LightOS's forced grayscale while the full-screen image viewer is
          open (see ColorMode). Signature-level, so it only works after a one-time

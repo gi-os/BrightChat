@@ -315,7 +315,67 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                 },
             )
 
-            if (state.messages.isEmpty() && state.threadLoading) {
+            // A person reached on several networks: which of their chats the thread shows. Only a
+            // joined person has this line, so a chat with one network looks exactly as before.
+            val strip = if (convo.isPerson) {
+                listOf(ALL_NETWORKS) + convo.members.map { com.gios.lightchat.people.People.networkOf(it) }.distinct() + CALLS
+            } else {
+                emptyList()
+            }
+            var showing by remember(convo.guid) { mutableStateOf(ALL_NETWORKS) }
+            val callPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                viewModel.reloadCalls()
+            }
+            if (strip.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    strip.forEachIndexed { i, name ->
+                        if (i > 0) Text(" · ", style = ChatType.hint, color = ChatColors.onSurfaceDisabled)
+                        HapticText(
+                            text = name,
+                            style = ChatType.hint,
+                            color = if (name == showing) ChatColors.onSurface else ChatColors.onSurfaceDisabled,
+                            onClick = {
+                                showing = name
+                                if (name == CALLS) {
+                                    if (!com.gios.lightchat.people.CallHistory.canReadPhone(context)) {
+                                        callPermission.launch(Manifest.permission.READ_CALL_LOG)
+                                    } else {
+                                        viewModel.reloadCalls()
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            // The messages the list draws: all of them, or one network's.
+            val shown = when {
+                !convo.isPerson || showing == ALL_NETWORKS || showing == CALLS -> state.messages
+                else -> state.messages.filter { viewModel.networkOf(convo, it) == showing }
+            }
+            // In the merged view, a message that starts a run on a different network gets a
+            // one-line "on WhatsApp" above it, so where a message came from is never a guess.
+            val runStarts = remember(shown, convo.guid, showing) {
+                if (!convo.isPerson || showing != ALL_NETWORKS) {
+                    emptyMap()
+                } else {
+                    var previous: String? = null
+                    buildMap {
+                        for (m in shown) {
+                            val net = viewModel.networkOf(convo, m)
+                            if (net != previous) put(m.guid, net)
+                            previous = net
+                        }
+                    }
+                }
+            }
+
+            if (convo.isPerson && showing == CALLS) {
+                CallsList(state.calls, modifier = Modifier.weight(1f))
+            } else if (state.messages.isEmpty() && state.threadLoading) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(text = "Loading…", style = ChatType.body, color = ChatColors.onSurfaceDisabled)
                 }
@@ -380,7 +440,16 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     // Newest first so reverseLayout pins it to the bottom.
-                    items(state.messages.asReversed(), key = { it.guid }) { message ->
+                    items(shown.asReversed(), key = { it.guid }) { message ->
+                        runStarts[message.guid]?.let { network ->
+                            Text(
+                                text = "on $network",
+                                style = ChatType.hint,
+                                color = ChatColors.onSurfaceDisabled,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            )
+                        }
                         MessageRow(
                             message,
                             convo,
@@ -422,9 +491,9 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                             onSaveAttachment = { viewModel.saveAttachment(it) },
                             // What this chat's backend allows, not whether the Mac's helper is up: a
                             // WhatsApp chat takes tapbacks either way. See backend/ChatBackend.
-                            canReact = viewModel.caps(convo).reactions,
+                            canReact = viewModel.capsFor(convo, message).reactions,
                             pickerOpen = reactingTo == message.guid,
-                            onLongPress = { if (viewModel.caps(convo).reactions) reactingTo = message.guid },
+                            onLongPress = { if (viewModel.capsFor(convo, message).reactions) reactingTo = message.guid },
                             onReact = { type ->
                                 viewModel.sendReaction(message, type)
                                 reactingTo = null
@@ -523,6 +592,18 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                         onClick = { editing = null },
                     )
                 }
+            }
+
+            // Which of the person's chats the next message goes out on. Tap to step through them.
+            if (convo.isPerson) {
+                HapticText(
+                    text = "via " + com.gios.lightchat.people.People.networkOf(viewModel.sendTargetFor(convo)) + " ▾",
+                    style = ChatType.hint,
+                    color = ChatColors.onSurfaceDim,
+                    textAlign = TextAlign.End,
+                    onClick = viewModel::cycleReplyVia,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                )
             }
 
             ComposeBar(
@@ -908,6 +989,17 @@ private fun MessageRow(
     // centered and dim, with no label, gutter, or tapback affordances.
     if (message.isGroupEvent) {
         GroupEventRow(message, contacts)
+        return
+    }
+    // A bridge's call notice ("Missed voice call") is a line, not a turn. Beeper only.
+    if (message.isCall) {
+        Text(
+            text = message.text,
+            style = ChatType.hint,
+            color = ChatColors.onSurfaceDim,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        )
         return
     }
     // Name labels on both sides — "You" for your turns, the sender's name for
@@ -1372,3 +1464,35 @@ private data class Listening(
     val name: String?,
     val attachment: Attachment,
 )
+
+/** The strip's first and last entries; the ones between are the person's networks. */
+private const val ALL_NETWORKS = "All"
+private const val CALLS = "Calls"
+
+/** A person's calls, newest first: phone calls and the call notices Beeper's bridges post. */
+@Composable
+private fun CallsList(calls: List<com.gios.lightchat.people.CallEntry>, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    if (calls.isEmpty()) {
+        Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text(text = "No calls", style = ChatType.body, color = ChatColors.onSurfaceDisabled)
+        }
+        return
+    }
+    LazyColumn(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        items(calls, key = { it.via + it.date + it.kind }) { call ->
+            Row(modifier = Modifier.fillMaxWidth()) {
+                val length = if (call.durationSec > 0) " · " + (call.durationSec / 60).coerceAtLeast(1) + " min" else ""
+                Text(
+                    text = call.kind + " · " + call.via + length,
+                    style = ChatType.body,
+                    color = ChatColors.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(text = listTime(context, call.date), style = ChatType.hint, color = ChatColors.onSurfaceDim)
+            }
+        }
+    }
+}

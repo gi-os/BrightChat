@@ -175,6 +175,8 @@ object BeeperMapping {
         val failed: Boolean = false,
         /** The client transaction id of our own send, so the optimistic bubble reconciles. */
         val tempGuid: String? = null,
+        /** A call notice from the bridge. */
+        val isCall: Boolean = false,
     )
 
     /**
@@ -200,6 +202,7 @@ object BeeperMapping {
         if (e.failed) put("error", 1)
         e.replyTo?.let { put("threadOriginatorGuid", it) }
         e.tempGuid?.let { put("tempGuid", it) }
+        if (e.isCall) put("isCallEvent", true)
         val reactionType = e.reactionRemoval ?: reactionOf(e.reactionKey)
         if (e.reactionTarget != null && reactionType != null) {
             put("associatedMessageGuid", e.reactionTarget)
@@ -263,6 +266,11 @@ object BeeperMapping {
         if (firstReal < 0) return body
         return lines.drop(firstReal).dropWhile { it.isBlank() }.joinToString("\n")
     }
+
+    private val CALL_WORDS = Regex("(?i)\\b(call|calling|llamada|appel|anruf)\\b")
+
+    /** Whether a bridge notice is about a call ("Missed voice call", "Incoming video call"). */
+    fun isCallNotice(body: String): Boolean = CALL_WORDS.containsMatchIn(body)
 
     /** The "* " an edit carries in its fallback body, for clients that don't read edits. */
     fun stripEditFallback(body: String): String = body.removePrefix("* ")

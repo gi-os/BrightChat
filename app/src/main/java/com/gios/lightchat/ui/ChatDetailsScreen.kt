@@ -198,6 +198,15 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
             )
 
+            // Linking this person's other chats (Beeper on, one-to-ones only). Hoisted with the rest.
+            var linking by remember(convo.guid) { mutableStateOf(false) }
+            val linkable = if (linking) {
+                viewModel.displayed(state).filter {
+                    !it.isGroup && !it.isAgent && it.guid !in convo.guids
+                }
+            } else {
+                emptyList()
+            }
             LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
                 if (convo.isGroup) {
                     item(key = "name") {
@@ -291,6 +300,61 @@ fun ChatDetailsScreen(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 },
                             )
                         }
+                    }
+                }
+
+                // Which networks this person is on. Only with Beeper signed in, so a phone that
+                // only has iMessage sees the page exactly as it was.
+                if (state.beeperOn && !convo.isGroup && !convo.isAgent) {
+                    item(key = "threads-label") {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            SectionLabel("Threads")
+                        }
+                    }
+                    items(convo.members.ifEmpty { listOf(convo) }, key = { "thread:" + it.guid }) { member ->
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text(
+                                text = com.gios.lightchat.people.People.networkOf(member),
+                                style = ChatType.body,
+                                color = ChatColors.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (convo.isPerson) {
+                                HapticText(
+                                    text = "Unlink",
+                                    style = ChatType.hint,
+                                    color = ChatColors.onSurfaceDim,
+                                    onClick = { viewModel.unlinkChat(convo, member.guid) },
+                                )
+                            }
+                        }
+                    }
+                    item(key = "thread-link") {
+                        HapticText(
+                            text = if (linking) "Cancel" else "Link another chat",
+                            style = ChatType.hint,
+                            color = ChatColors.onSurfaceDim,
+                            textAlign = TextAlign.Start,
+                            onClick = { linking = !linking },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        )
+                    }
+                    items(linkable, key = { "link:" + it.guid }) { other ->
+                        HapticText(
+                            text = state.contacts.title(other) + " · " + com.gios.lightchat.people.People.networkOf(other),
+                            style = ChatType.body,
+                            color = ChatColors.onSurfaceDim,
+                            textAlign = TextAlign.Start,
+                            maxLines = 1,
+                            onClick = {
+                                linking = false
+                                val mine = convo.members.firstOrNull()?.guid ?: convo.guid
+                                val theirs = other.members.firstOrNull()?.guid ?: other.guid
+                                viewModel.linkChats(mine, theirs)
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        )
                     }
                 }
 
