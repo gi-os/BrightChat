@@ -76,8 +76,11 @@ private fun vector(pathData: String): ImageVector =
  * emphasize, and question are Public Sans text sized to sit level with the icons.
  */
 @Composable
-fun TapbackGlyph(type: ReactionType, color: Color, size: Dp = DEFAULT_GLYPH_DP.dp) {
+fun TapbackGlyph(type: ReactionType, color: Color, size: Dp = DEFAULT_GLYPH_DP.dp, emoji: String? = null) {
     when (type) {
+        // The emoji itself, in the phone's emoji font. Not tinted: the panel is greyscale anyway,
+        // and a tinted emoji is a silhouette.
+        ReactionType.EMOJI -> EmojiGlyph(emoji ?: "?", size)
         ReactionType.LOVE -> Icon(HeartVector, contentDescription = "love", tint = color, modifier = Modifier.size(size))
         ReactionType.LIKE -> Icon(ThumbUpVector, contentDescription = "like", tint = color, modifier = Modifier.size(size))
         ReactionType.DISLIKE -> Icon(ThumbDownVector, contentDescription = "dislike", tint = color, modifier = Modifier.size(size))
@@ -85,6 +88,23 @@ fun TapbackGlyph(type: ReactionType, color: Color, size: Dp = DEFAULT_GLYPH_DP.d
         ReactionType.EMPHASIZE -> GlyphText("!!", color, size)
         ReactionType.QUESTION -> GlyphText("?", color, size)
     }
+}
+
+@Composable
+private fun EmojiGlyph(emoji: String, size: Dp) {
+    Box(modifier = Modifier.height(size), contentAlignment = Alignment.Center) {
+        Text(
+            text = emoji,
+            style = TextStyle(fontSize = (size.value * 0.9f).sp, textAlign = TextAlign.Center),
+            maxLines = 1,
+        )
+    }
+}
+
+/** A "+" in the picker's row: every other emoji, one tap away. */
+@Composable
+fun MoreEmojiGlyph(color: Color, size: Dp) {
+    GlyphText("+", color, size)
 }
 
 /** A text tapback (HA / !! / ?) matched to the icon's height (width free, so two
@@ -122,8 +142,8 @@ private fun GlyphText(text: String, color: Color, size: Dp) {
 @Composable
 fun GutterReactions(reactions: List<Reaction>, fromMe: Boolean, modifier: Modifier = Modifier) {
     val groups = remember(reactions) {
-        reactions.groupBy { it.type }
-            .map { (type, rs) -> ReactionTally(type, rs.size, rs.any { it.fromMe }) }
+        reactions.groupBy { it.type to it.emoji }
+            .map { (key, rs) -> ReactionTally(key.first, rs.size, rs.any { it.fromMe }, key.second) }
             .sortedBy { it.type.ordinal }
     }
     FlowRow(
@@ -141,7 +161,7 @@ fun GutterReactions(reactions: List<Reaction>, fromMe: Boolean, modifier: Modifi
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(1.dp),
             ) {
-                TapbackGlyph(type = g.type, color = color)
+                TapbackGlyph(type = g.type, color = color, emoji = g.emoji)
                 if (g.count > 1) {
                     Text(
                         text = g.count.toString(),
@@ -156,7 +176,7 @@ fun GutterReactions(reactions: List<Reaction>, fromMe: Boolean, modifier: Modifi
     }
 }
 
-private data class ReactionTally(val type: ReactionType, val count: Int, val mine: Boolean)
+private data class ReactionTally(val type: ReactionType, val count: Int, val mine: Boolean, val emoji: String? = null)
 
 /** A small drawn arrow pointing back at the turn — same vector treatment as the
  *  glyphs, so it's crisp and centers cleanly (the ASCII `<-`/`->` rode high off the

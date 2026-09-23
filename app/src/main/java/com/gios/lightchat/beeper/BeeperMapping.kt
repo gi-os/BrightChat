@@ -33,6 +33,9 @@ object BeeperMapping {
 
     fun isBeeper(guid: String?): Boolean = guid?.startsWith(GUID_PREFIX) == true
 
+    /** A Matrix event id (it starts with a dollar sign), as opposed to an iMessage guid. */
+    fun isMatrixEvent(guid: String?): Boolean = guid?.startsWith("${'$'}") == true
+
     // ---------------------------------------------------------------- networks
 
     /**
@@ -170,6 +173,8 @@ object BeeperMapping {
         val reactionKey: String? = null,
         /** A removed reaction: the tapback it took away, recovered from the stored original. */
         val reactionRemoval: ReactionType? = null,
+        /** The emoji a removed [ReactionType.EMOJI] reaction carried. */
+        val reactionRemovalEmoji: String? = null,
         val editedAt: Long = 0,
         val readAt: Long = 0,
         val failed: Boolean = false,
@@ -203,13 +208,18 @@ object BeeperMapping {
         e.replyTo?.let { put("threadOriginatorGuid", it) }
         e.tempGuid?.let { put("tempGuid", it) }
         if (e.isCall) put("isCallEvent", true)
-        val reactionType = e.reactionRemoval ?: reactionOf(e.reactionKey)
+        // The six tapbacks keep their own marks; any other emoji is an `emoji` reaction carrying it.
+        val key = e.reactionKey?.takeIf { it.isNotBlank() }
+        val reactionType = e.reactionRemoval ?: reactionOf(key) ?: key?.let { ReactionType.EMOJI }
         if (e.reactionTarget != null && reactionType != null) {
             put("associatedMessageGuid", e.reactionTarget)
             put(
                 "associatedMessageType",
                 if (e.reactionRemoval != null) "-${reactionType.apiValue}" else reactionType.apiValue,
             )
+            if (reactionType == ReactionType.EMOJI) {
+                (if (e.reactionRemoval != null) e.reactionRemovalEmoji else key)?.let { put("associatedMessageEmoji", it) }
+            }
         }
         if (e.files.isNotEmpty()) {
             put(

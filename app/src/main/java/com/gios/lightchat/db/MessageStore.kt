@@ -508,6 +508,7 @@ class MessageStore private constructor(context: Context) {
                         put("fromMe", r.fromMe)
                         put("reactor", r.reactor ?: JSONObject.NULL)
                         put("target", r.target)
+                        r.emoji?.let { put("emoji", it) }
                     },
                 )
             }
@@ -539,6 +540,7 @@ class MessageStore private constructor(context: Context) {
                             fromMe = r.optBoolean("fromMe"),
                             reactor = if (r.isNull("reactor")) null else r.optString("reactor"),
                             target = r.optString("target"),
+                            emoji = r.optString("emoji").takeIf { it.isNotBlank() },
                         )
                     }
                 },

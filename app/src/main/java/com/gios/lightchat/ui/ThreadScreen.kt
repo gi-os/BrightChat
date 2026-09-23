@@ -87,6 +87,8 @@ import com.gios.lightchat.api.Store
 import com.gios.lightchat.Attachment
 import com.gios.lightchat.ChatBackground
 import com.gios.lightchat.ChatMessage
+import com.gios.lightchat.links.Instagram
+import androidx.compose.runtime.CompositionLocalProvider
 import com.gios.lightchat.ChatViewModel
 import com.gios.lightchat.Contacts
 import com.gios.lightchat.Conversation
@@ -109,6 +111,8 @@ fun ThreadScreen(viewModel: ChatViewModel) {
     // the server's Private API is live — otherwise reacting can't be sent, so we don't
     // offer it.
     var reactingTo by remember { mutableStateOf<String?>(null) }
+    // The message the full emoji picker is open for (Beeper only), or null.
+    var emojiFor by remember { mutableStateOf<ChatMessage?>(null) }
 
     // The message the next send replies to (chosen from the long-press menu),
     // shown as a banner above the compose bar until sent or cancelled.
@@ -453,6 +457,7 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                                 NetworkTile(network, dim = true)
                             }
                         }
+                        CompositionLocalProvider(LocalPlayVideo provides { viewingVideo = it }) {
                         MessageRow(
                             message,
                             convo,
@@ -518,7 +523,16 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                                 null
                             },
                             onDismissPicker = { reactingTo = null },
+                            onMoreEmoji = if (viewModel.capsFor(convo, message).emojiReactions) {
+                                {
+                                    emojiFor = message
+                                    reactingTo = null
+                                }
+                            } else {
+                                null
+                            },
                         )
+                        }
                     }
                     // Drawn last so reverseLayout puts it above the oldest message — where
                     // the eye already is when this fires.
@@ -708,6 +722,19 @@ fun ThreadScreen(viewModel: ChatViewModel) {
                     onClose = { picking = false },
                     // The one place a clip can go: a single open thread, one upload.
                     allowVideo = true,
+                )
+            }
+        }
+
+        emojiFor?.let { target ->
+            BackHandler { emojiFor = null }
+            Surface(modifier = Modifier.fillMaxSize(), color = ChatColors.background) {
+                EmojiSheet(
+                    onPick = { glyph ->
+                        emojiFor = null
+                        viewModel.sendReaction(target, ReactionType.EMOJI, glyph)
+                    },
+                    onClose = { emojiFor = null },
                 )
             }
         }
@@ -1000,6 +1027,8 @@ private fun MessageRow(
     /** Null when this message cannot be edited from here; the menu then shows no Edit. */
     onEdit: (() -> Unit)? = null,
     onDismissPicker: () -> Unit,
+    /** Opens every emoji. Null where only the six tapbacks can be sent (iMessage). */
+    onMoreEmoji: (() -> Unit)? = null,
 ) {
     // A group-system row (rename, member change) is an event line, not a turn —
     // centered and dim, with no label, gutter, or tapback affordances.
@@ -1085,7 +1114,7 @@ private fun MessageRow(
         // keep the same cap whether or not there's a reaction.
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             if (message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
-            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, onSaveAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onEdit, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH))
+            MessageContent(message, loadImage, loadFile, onImageTap, onOpenAttachment, onSaveAttachment, canReact, pickerOpen, onLongPress, onReact, onReply, onEdit, onDismissPicker, Modifier.weight(MESSAGE_MAX_WIDTH), onMoreEmoji = onMoreEmoji)
             if (!message.fromMe) ReactionGutter(message, Modifier.weight(1f - MESSAGE_MAX_WIDTH))
         }
         // "Not delivered" on any sent message the Mac later failed to deliver
@@ -1183,6 +1212,7 @@ private fun MessageContent(
     onEdit: (() -> Unit)?,
     onDismissPicker: () -> Unit,
     modifier: Modifier,
+    onMoreEmoji: (() -> Unit)? = null,
 ) {
     val align = if (message.fromMe) Alignment.End else Alignment.Start
     val textAlign = if (message.fromMe) TextAlign.End else TextAlign.Start
@@ -1208,6 +1238,7 @@ private fun MessageContent(
                 onReact = onReact,
                 onReply = onReply,
                 onEdit = onEdit,
+                onMoreEmoji = onMoreEmoji,
             )
             Spacer(modifier = Modifier.height(6.dp))
         }
@@ -1231,7 +1262,10 @@ private fun MessageContent(
             }
             Spacer(modifier = Modifier.height(if (body != null) 6.dp else 4.dp))
         }
-        if (body != null) {
+        // An Instagram post or reel shows as itself. A message that is nothing but the link loses
+        // the link text, since the card says the same and opens it too.
+        val instagram = remember(body) { Instagram.find(body) }
+        if (body != null && !(instagram != null && body.trim() == instagram.url)) {
             Text(
                 text = linkify(body),
                 style = ChatType.body,
@@ -1239,6 +1273,10 @@ private fun MessageContent(
                 textAlign = textAlign,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+        if (instagram != null) {
+            if (body?.trim() != instagram.url) Spacer(modifier = Modifier.height(6.dp))
+            InstagramCard(instagram)
         }
     }
 }
@@ -1271,6 +1309,7 @@ private fun ReactionPicker(
     onReact: (ReactionType) -> Unit,
     onReply: () -> Unit,
     onEdit: (() -> Unit)?,
+    onMoreEmoji: (() -> Unit)? = null,
 ) {
     val haptics = LocalHapticFeedback.current
     // Two rows, not one. The six glyphs alone are ~220 dp, and the message column is 80% of a
@@ -1281,10 +1320,11 @@ private fun ReactionPicker(
     // react, and they should read like it.
     Column(horizontalAlignment = Alignment.Start) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            // A seventh mark (+) when every emoji is on offer, so a little tighter to fit.
+            horizontalArrangement = Arrangement.spacedBy(if (onMoreEmoji != null) 14.dp else 18.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ReactionType.entries.forEach { type ->
+            ReactionType.entries.filter { it != ReactionType.EMOJI }.forEach { type ->
                 Box(
                     modifier = Modifier.clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -1299,6 +1339,19 @@ private fun ReactionPicker(
                         color = if (type == selected) ChatColors.onSurface else ChatColors.onSurfaceDim,
                         size = 22.dp,
                     )
+                }
+            }
+            if (onMoreEmoji != null) {
+                Box(
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onMoreEmoji()
+                    },
+                ) {
+                    MoreEmojiGlyph(color = ChatColors.onSurfaceDim, size = 22.dp)
                 }
             }
         }

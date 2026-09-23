@@ -156,7 +156,11 @@ enum class ReactionType(val apiValue: String) {
     DISLIKE("dislike"),
     LAUGH("laugh"),
     EMPHASIZE("emphasize"),
-    QUESTION("question");
+    QUESTION("question"),
+
+    /** Any other emoji. The emoji itself rides beside it ([ChatMessage.associatedMessageEmoji],
+     *  [Reaction.emoji]); Beeper networks and iOS 17's emoji tapbacks both send these. */
+    EMOJI("emoji");
 
     /** Past-tense verb for the conversation-list summary ("Liz loved an image"). */
     val verb: String
@@ -167,6 +171,7 @@ enum class ReactionType(val apiValue: String) {
             LAUGH -> "laughed at"
             EMPHASIZE -> "emphasized"
             QUESTION -> "questioned"
+            EMOJI -> "reacted to"
         }
 
     companion object {
@@ -186,6 +191,8 @@ data class Reaction(
     val type: ReactionType,
     val fromMe: Boolean,
     val sender: String?,      // reactor's handle address; null when from me
+    /** The emoji, for an [ReactionType.EMOJI] reaction; null for the six tapbacks. */
+    val emoji: String? = null,
 )
 
 /**
@@ -201,10 +208,12 @@ data class ReactionPreview(
     val fromMe: Boolean,
     val reactor: String?,
     val target: String,
+    val emoji: String? = null,
 ) {
     /** The one-line summary, resolving the reactor to a name ("You" when mine). */
     fun summary(contacts: Contacts): String {
         val who = if (fromMe) "You" else reactor?.let { contacts.sender(it) } ?: "Someone"
+        if (type == ReactionType.EMOJI) return "$who reacted ${emoji ?: "to"} $target".replace("  ", " ")
         return "$who ${type.verb} $target"
     }
 }
@@ -249,6 +258,8 @@ data class ChatMessage(
     // folds them onto their target as [reactions].
     val associatedMessageGuid: String? = null,
     val associatedMessageType: String? = null,
+    // The emoji of an `emoji` reaction (iOS 17 emoji tapbacks, any Beeper reaction outside the six).
+    val associatedMessageEmoji: String? = null,
     // Tapbacks folded onto this (normal) message for display. Never serialized;
     // populated by ChatViewModel.foldReactions from the reaction messages.
     val reactions: List<Reaction> = emptyList(),
@@ -367,7 +378,7 @@ data class ChatMessage(
         val type = reactionType ?: return null
         if (isReactionRemoval) return null
         val desc = reactionTargetGuid?.let(findTarget)?.shortDescription ?: "a message"
-        return ReactionPreview(type, fromMe, sender, desc)
+        return ReactionPreview(type, fromMe, sender, desc, emoji = associatedMessageEmoji)
     }
 
     /** A one-phrase stand-in for this message when another line points at it —

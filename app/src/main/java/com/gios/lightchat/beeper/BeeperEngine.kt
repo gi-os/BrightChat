@@ -72,6 +72,9 @@ import de.connect2x.trixnity.core.model.events.m.secretstorage.SecretKeyEventCon
 import de.connect2x.trixnity.crypto.key.DeviceTrustLevel
 import de.connect2x.trixnity.crypto.key.decodeRecoveryKey
 import io.ktor.client.engine.android.Android
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
+import de.connect2x.trixnity.core.AuthRequired
 import io.ktor.http.ContentType
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
@@ -403,6 +406,7 @@ object BeeperEngine {
             client?.let { c -> withTimeoutOrNull(5_000) { BeeperPush.unregister(ctx, c) } }
             BeeperPush.forget(ctx)
             BeeperAlerts.forget(ctx)
+            BeeperIdentities.forget(ctx)
             client?.let { c ->
                 runCatching { c.logout() }
                 runCatching { c.closeSuspending() }
@@ -537,8 +541,60 @@ object BeeperEngine {
                 autoReport("build the chat list", firstRowError)
             }
             (_status.value as? Status.Ready)?.let { _status.value = it.copy(rooms = rowCache.size) }
+            lookUpIdentities(c, joined)
         }
     }
+
+    @Volatile private var identityJob: Job? = null
+
+    /**
+     * Asks the bridge for the numbers behind one-to-one chats it has not been asked about (see
+     * [BeeperIdentities]). One small request per person, a few at a time, once: the answers are kept.
+     * Its own job so a list pass that restarts does not cancel lookups halfway, and single-flight so
+     * two passes do not ask twice.
+     */
+    private fun lookUpIdentities(c: MatrixClient, rooms: List<MatrixRoom>) {
+        val ctx = appContext ?: return
+        if (identityJob?.isActive == true) return
+        val wanted = rooms.mapNotNull { room ->
+            val row = rowCache[room.roomId.full]?.second ?: return@mapNotNull null
+            if (row.isGroup) return@mapNotNull null
+            val user = row.participants.singleOrNull() ?: return@mapNotNull null
+            if (!BeeperIdentities.needsLookup(ctx, user)) null else room.roomId to user
+        }.take(IDENTITY_BATCH)
+        if (wanted.isEmpty()) return
+        identityJob = scope.launch {
+            var found = 0
+            for ((roomId, user) in wanted) {
+                val keys = runCatching { memberIdentifiers(c, roomId, user) }
+                    .onFailure { if (it is CancellationException) throw it }
+                    // A refusal (no such member, a bridge that sets nothing) is an answer too:
+                    // kept as empty, so it is asked again in a week rather than every pass.
+                    .getOrDefault(emptySet())
+                BeeperIdentities.remember(ctx, user, keys)
+                if (keys.isNotEmpty()) found++
+                delay(150)
+            }
+            if (found > 0) {
+                note("people: numbers for $found chats")
+                _changes.tryEmit(Unit)
+            }
+        }
+    }
+
+    /** One ghost's `m.room.member` content, raw, for the identifier field Trixnity has no type for. */
+    private suspend fun memberIdentifiers(c: MatrixClient, roomId: RoomId, user: String): Set<String> {
+        val enc = { v: String -> java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20") }
+        val url = "$HOMESERVER/_matrix/client/v3/rooms/${enc(roomId.full)}/state/m.room.member/${enc(user)}"
+        val body = withTimeoutOrNull(10_000) {
+            c.api.baseClient.baseClient.get(url) {
+                attributes.put(AuthRequired.attributeKey, AuthRequired.YES)
+            }.bodyAsText()
+        } ?: error("timed out")
+        return BeeperIdentities.fromMemberContent(JSONObject(body))
+    }
+
+    private const val IDENTITY_BATCH = 60
 
     /** Every new event, as it syncs, onto the same bus the BlueBubbles socket feeds. */
     private suspend fun watchTimeline(c: MatrixClient) {
@@ -779,6 +835,7 @@ object BeeperEngine {
                     base.copy(
                         reactionTarget = original.associatedMessageGuid,
                         reactionRemoval = original.reactionType,
+                        reactionRemovalEmoji = original.associatedMessageEmoji,
                     )
                 } else {
                     base.copy(text = "Message deleted")
@@ -965,12 +1022,13 @@ object BeeperEngine {
     }
 
     /** Puts a tapback on [targetEventId]. Reactions go unencrypted, as every Matrix client sends them. */
-    suspend fun react(roomGuid: String, targetEventId: String, type: ReactionType): ChatMessage {
+    suspend fun react(roomGuid: String, targetEventId: String, type: ReactionType, emoji: String? = null): ChatMessage {
         val c = ensureClient() ?: error("Beeper isn’t signed in.")
         val roomId = roomIdOrThrow(roomGuid)
+        val key = if (type == ReactionType.EMOJI) requireNotNull(emoji) else BeeperMapping.emojiFor(type)
         val id = c.api.room.sendMessageEvent(
             roomId,
-            ReactionEventContent(relatesTo = RelatesTo.Annotation(EventId(targetEventId), BeeperMapping.emojiFor(type))),
+            ReactionEventContent(relatesTo = RelatesTo.Annotation(EventId(targetEventId), key)),
         ).getOrThrow()
         return ChatMessage(
             guid = id.full,
@@ -980,6 +1038,7 @@ object BeeperEngine {
             sender = null,
             associatedMessageGuid = targetEventId,
             associatedMessageType = type.apiValue,
+            associatedMessageEmoji = if (type == ReactionType.EMOJI) key else null,
         )
     }
 

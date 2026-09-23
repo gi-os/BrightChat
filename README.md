@@ -164,13 +164,22 @@ this phone. BrightChat then syncs once and decrypts the message on the phone. To
 ntfy server, tap **Change push server** under Beeper. The server needs a public HTTPS address
 and `base-url` set; ntfy's Matrix gateway is on by default.
 
-Not yet in this release: emoji verification with another device, emoji reactions outside the
-six tapbacks, and adding people to a bridged group. The
+**Any emoji.** In a Beeper chat, hold a message and tap **+** after the six tapbacks to react
+with any emoji. The picker has search (`pizza`, `hungry`), your recent ones, and every group.
+Emoji reactions from others show on the message, on iMessage too.
+
+Not yet in this release: emoji verification with another device, and adding people to a
+bridged group. The
 **Show log** line under the Beeper settings shows what the connection did; include it in a bug
 report.
 
 iMessage stays on BlueBubbles. Beeper runs on the phone and talks to Beeper's servers; no Mac
 is needed for it.
+
+**Instagram links.** A link to an Instagram post or reel shows the post in the thread: the
+picture (every photo of a carousel), the account and the caption. Tap a reel to play it in place,
+tap again to pause, and hold it for full screen. This works for public posts in any chat,
+iMessage included, and needs no Instagram account.
 
 **One row per person.** With Beeper signed in, a person you talk to on iMessage and WhatsApp (or
 any two networks) is one row. BrightChat joins two chats only when both are one-to-ones, both
@@ -194,6 +203,10 @@ when they have a chat there.
 The Dial tab also lists **Recent** calls under the speed dials: phone calls (named from your
 contacts) and WhatsApp or Signal call notices. Tap a phone call to ring back, or a Beeper call to
 open that chat.
+
+A chat also joins a person by **phone number or email**, whatever the names say. WhatsApp
+contacts carry their number in their Beeper ID, and Beeper's bridges list numbers and emails for
+many others. BrightChat asks once per person and keeps the answer.
 
 Without Beeper none of this appears, and the app looks and works as before.
 
@@ -455,6 +468,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.48.x (nightly) | Any emoji as a Beeper reaction (search, recents, every group); people joined by phone number or email; Instagram posts and reels shown in the thread, reels playing in place |
 | v2.47.x (nightly) | **Beeper notifications**: alerts for WhatsApp, Signal and the rest, following your Beeper mute settings, with an ntfy wake-up while the phone sleeps. Beeper works with no Mac set up at all |
 | v2.46.x (nightly) | Dial tab: **Voicemail** in the corner rings your carrier voicemail; the keypad folds away until you tap **Keypad** |
 | v2.45.x (nightly) | **People** (Beeper on only): one row per person across iMessage and Beeper networks, a thread with All · iMessage · WhatsApp · Calls, "on WhatsApp" dividers, a "via" line choosing where the next message goes, call history (phone calls and bridge call notices), and Link / Unlink on the contact page. Beeper failures send a redacted log report by themselves |
@@ -471,7 +485,8 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 The Beeper login flow, the `/keys/claim` repair and the recovery-key verification are adapted
 from [fenleon/chats](https://github.com/fenleon/chats) and
 [Beeper4LightOS](https://github.com/ironfeet/Beeper4LightOS), both MIT, as is the ntfy
-push pattern (from fenleon/chats). Matrix is
+push pattern (from fenleon/chats). The emoji table and search come from
+[BrightKeyboard](https://github.com/gi-os/BrightKeyboard) (MIT). Matrix is
 [Trixnity](https://gitlab.com/connect2x/trixnity) (Apache-2.0).
 
 ---

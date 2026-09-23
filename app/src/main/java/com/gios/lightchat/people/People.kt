@@ -30,6 +30,8 @@ data class PeopleLinks(
  * - both are one-to-ones (groups are never joined),
  * - they resolve to the **same full name** (two words or more): the address book's name for the
  *   iMessage handle, the network's own name for a Beeper chat,
+ * - or they share a **phone number or email** (see `beeper/BeeperIdentities`), which joins them
+ *   whatever the names say,
  * - they are on **different networks**, and no network has two chats with that name. Two
  *   WhatsApp chats both called "Alex Kim" are two people, or one we can't tell apart, so neither
  *   joins anything.
@@ -56,6 +58,7 @@ object People {
         nameOf: (Conversation) -> String?,
         links: PeopleLinks,
         favorites: Set<String>,
+        keysOf: (Conversation) -> Set<String> = { emptySet() },
     ): List<Conversation> {
         val candidates = conversations.filter { !it.isGroup && !it.isAgent }
         val byGuid = candidates.associateBy { it.guid }
@@ -78,6 +81,21 @@ object People {
             .mapNotNull { c -> nameOf(c)?.let(::normalize)?.takeIf(::isFullName)?.let { it to c } }
             .groupBy({ it.first }, { it.second })
             .values
+            .filter { group -> group.size > 1 }
+            .filter { group -> group.groupBy(::networkOf).values.all { it.size == 1 } }
+            .forEach { group ->
+                for (i in group.indices) for (j in i + 1 until group.size) {
+                    if (!links.isSplit(group[i].guid, group[j].guid)) union(group[i].guid, group[j].guid)
+                }
+            }
+        // Automatic: the same phone number or email, different networks. A number is a harder
+        // match than a name, so this joins whatever the names say, but the same guards apply: one
+        // chat per network, and never over a hand split.
+        candidates
+            .flatMap { c -> keysOf(c).map { it to c } }
+            .groupBy({ it.first }, { it.second })
+            .values
+            .map { group -> group.distinctBy { it.guid } }
             .filter { group -> group.size > 1 }
             .filter { group -> group.groupBy(::networkOf).values.all { it.size == 1 } }
             .forEach { group ->

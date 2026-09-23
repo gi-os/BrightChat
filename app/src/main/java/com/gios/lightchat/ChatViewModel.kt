@@ -15,6 +15,8 @@ import com.gios.lightchat.api.BlueBubblesApi
 import com.gios.lightchat.backend.Caps
 import com.gios.lightchat.beeper.BeeperEngine
 import com.gios.lightchat.beeper.BeeperMapping
+import com.gios.lightchat.beeper.BeeperIdentities
+import com.gios.lightchat.emoji.EmojiRecents
 import com.gios.lightchat.people.CallEntry
 import com.gios.lightchat.people.CallHistory
 import com.gios.lightchat.people.People
@@ -259,7 +261,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun displayed(s: UiState): List<Conversation> =
         if (!s.beeperOn) s.conversations
-        else People.merge(s.conversations, { nameFor(it, s.contacts) }, s.links, s.favorites)
+        else People.merge(s.conversations, { nameFor(it, s.contacts) }, s.links, s.favorites, ::keysOf)
+
+    /** The numbers and emails a one-to-one reaches: the handle for iMessage, the bridge's for Beeper. */
+    private fun keysOf(c: Conversation): Set<String> {
+        if (c.isGroup) return emptySet()
+        val handle = c.participants.singleOrNull() ?: return emptySet()
+        return if (c.isBeeper) BeeperIdentities.keysFor(app, handle)
+        else setOf(Contacts.key(handle)).filter { it.length >= 7 }.toSet()
+    }
 
     private fun nameFor(c: Conversation, contacts: Contacts): String? =
         if (c.isBeeper) c.displayName.takeIf { it.isNotBlank() && it != "Chat" }
@@ -1389,8 +1399,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         for (r in rows.filter { it.isReaction }.sortedBy { it.date }) {
             val target = r.reactionTargetGuid ?: continue
             val type = r.reactionType ?: continue
-            val reactorKey = if (r.fromMe) "me" else (r.sender ?: "?")
-            active[target to reactorKey] = if (r.isReactionRemoval) null else Reaction(type, r.fromMe, r.sender)
+            val emoji = if (type == ReactionType.EMOJI) r.associatedMessageEmoji else null
+            val reactor = if (r.fromMe) "me" else (r.sender ?: "?")
+            // iMessage holds one tapback per person per message, so a new one replaces the last.
+            // Matrix holds any number (❤️ and 🔥 both), each taken back on its own, so a Beeper
+            // reaction is keyed by what it is as well as by who.
+            val reactorKey = if (BeeperMapping.isMatrixEvent(target)) "$reactor|${emoji ?: type.name}" else reactor
+            active[target to reactorKey] = if (r.isReactionRemoval) null else Reaction(type, r.fromMe, r.sender, emoji)
         }
         val byTarget = HashMap<String, MutableList<Reaction>>()
         for ((key, reaction) in active) {
@@ -1623,15 +1638,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * reconciled with the server's echo. Gated on [UiState.privateApi]; can't react
      * to a not-yet-acked optimistic message (no real guid to target).
      */
-    fun sendReaction(target: ChatMessage, type: ReactionType) {
+    fun sendReaction(target: ChatMessage, type: ReactionType, emoji: String? = null) {
         val convo = _state.value.open ?: return
         val member = memberFor(convo, target)
         if (!caps(member).reactions) return
+        // Any emoji is a Beeper thing; the Mac's react endpoint takes the six words only.
+        if (type == ReactionType.EMOJI && (emoji.isNullOrBlank() || !caps(member).emojiReactions)) return
+        val key = if (type == ReactionType.EMOJI) emoji else null
+        if (key != null) EmojiRecents.used(app, key)
         if (target.guid.startsWith("temp-")) {
             _state.update { it.copy(message = "Still sending — try again in a moment") }
             return
         }
-        val removing = target.reactions.firstOrNull { it.fromMe }?.type == type
+        val removing = if (member.isBeeper) {
+            target.reactions.any { it.fromMe && it.type == type && it.emoji == key }
+        } else {
+            target.reactions.firstOrNull { it.fromMe }?.type == type
+        }
         val apiValue = if (removing) "-${type.apiValue}" else type.apiValue
         val tempGuid = newTempGuid("temp-react")
         val optimistic = ChatMessage(
@@ -1642,6 +1665,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             sender = null,
             associatedMessageGuid = target.guid,
             associatedMessageType = apiValue, // "love" or "-love"
+            associatedMessageEmoji = key,
         )
         // Matrix takes a reaction back by redacting the reaction event, so find ours now, on the
         // thread that owns openRaw.
@@ -1649,7 +1673,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             openRaw.lastOrNull {
                 it.isReaction && it.fromMe && !it.isReactionRemoval &&
                     it.reactionTargetGuid == target.guid && it.reactionType == type &&
-                    !it.guid.startsWith("temp-")
+                    it.associatedMessageEmoji == key && !it.guid.startsWith("temp-")
             }?.guid
         } else {
             null
@@ -1662,7 +1686,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (mineToRedact != null) BeeperEngine.redact(member.guid, mineToRedact)
                         reconcileEcho(convo.guid, tempGuid, optimistic.copy(guid = "removed-" + tempGuid))
                     } else {
-                        val sent = BeeperEngine.react(member.guid, target.guid, type)
+                        val sent = BeeperEngine.react(member.guid, target.guid, type, key)
                         reconcileEcho(convo.guid, tempGuid, sent)
                     }
                 } catch (t: Throwable) {

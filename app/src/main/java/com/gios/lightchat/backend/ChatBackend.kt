@@ -54,6 +54,8 @@ data class Caps(
     val groupRename: Boolean,
     val groupMembers: Boolean,
     val deleteChat: Boolean,
+    /** Any emoji as a reaction, not only the six tapbacks. */
+    val emojiReactions: Boolean = false,
 ) {
     companion object {
         /** BlueBubbles without the Private API: plain sends only (AppleScript). */
@@ -92,6 +94,7 @@ data class Caps(
             groupRename = true,
             groupMembers = false,
             deleteChat = false,
+            emojiReactions = true,
         )
 
         fun of(conversation: Conversation?, privateApi: Boolean): Caps = when {

@@ -41,7 +41,7 @@ class BeeperMappingTest {
         assertEquals(ReactionType.LOVE, BeeperMapping.reactionOf("❤️"))
         assertEquals(ReactionType.LIKE, BeeperMapping.reactionOf("👍🏽"))
         assertNull(BeeperMapping.reactionOf("🦄")) // a unicorn has no tapback
-        ReactionType.entries.forEach { type ->
+        ReactionType.entries.filter { it != ReactionType.EMOJI }.forEach { type ->
             assertEquals(type, BeeperMapping.reactionOf(BeeperMapping.emojiFor(type)))
         }
     }
@@ -135,5 +135,29 @@ class BeeperMappingTest {
         assertTrue(out.contains("<room:"))
         // Stable: the same id reads the same twice.
         assertEquals(BeeperReports.redact("@a:b.c"), BeeperReports.redact("@a:b.c"))
+    }
+
+    @Test fun anyEmojiIsAnEmojiReaction() {
+        val json = BeeperMapping.messageJson(
+            BeeperMapping.Event(
+                eventId = "\$r1", sender = "@a:beeper.local", senderName = "A", fromMe = false,
+                timestamp = 5L, text = "", reactionTarget = "\$m1", reactionKey = "🦄",
+            ),
+            "!room:beeper.com",
+        )
+        val m = com.gios.lightchat.api.BlueBubblesApi.parseMessage(json)
+        assertEquals(ReactionType.EMOJI, m.reactionType)
+        assertEquals("🦄", m.associatedMessageEmoji)
+        val removed = BeeperMapping.messageJson(
+            BeeperMapping.Event(
+                eventId = "\$r2", sender = "@a:beeper.local", senderName = "A", fromMe = false,
+                timestamp = 6L, text = "", reactionTarget = "\$m1",
+                reactionRemoval = ReactionType.EMOJI, reactionRemovalEmoji = "🦄",
+            ),
+            "!room:beeper.com",
+        )
+        val r = com.gios.lightchat.api.BlueBubblesApi.parseMessage(removed)
+        assertTrue(r.isReactionRemoval)
+        assertEquals("🦄", r.associatedMessageEmoji)
     }
 }
