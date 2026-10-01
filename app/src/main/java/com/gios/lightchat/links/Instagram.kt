@@ -127,7 +127,10 @@ object Instagram {
         failed[link.code]?.let { at -> if (!refresh && System.currentTimeMillis() - at < RETRY_FAILED_MS) return null }
         val html = getBytes(embedUrl(link), EMBED_MAX_BYTES)?.toString(Charsets.UTF_8)
         val post = html?.let { parseEmbed(link.code, it) }
-        if (post == null) failed[link.code] = System.currentTimeMillis() else failed.remove(link.code)
+        // Only a page that came back and said nothing is remembered as a failure. No connection
+        // is not the post's fault, and it should load as soon as the network does.
+        if (post == null && html != null) failed[link.code] = System.currentTimeMillis()
+        if (post != null) failed.remove(link.code)
         return post?.also { posts[link.code] = it }
     }
 

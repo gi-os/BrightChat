@@ -154,15 +154,36 @@ object People {
      * last-ten-digits form, which makes +39 347 123 4567 and +1 347 123 4567 the same person.
      * Null for anything too short to be a person's number (short codes, typos).
      */
-    fun matchKey(address: String): String? {
+    fun matchKey(address: String, countryCode: String = "1"): String? {
         val a = address.trim()
         if (a.contains("@")) return a.lowercase().takeIf { it.length > 3 }
         val digits = a.filter { it.isDigit() }
-        return when {
-            digits.length == 10 -> "1$digits"
-            digits.length < 8 -> null
-            else -> digits
+        if (digits.length < 8) return null
+        // International form: "+…", or "00…" as dialled from most of the world.
+        if (a.startsWith("+")) return digits
+        if (digits.startsWith("00")) return digits.drop(2)
+        // National form, stored as dialled at home: the phone's own country code goes in front,
+        // after the trunk 0 most countries dial before a national number (Italy keeps its 0).
+        if (countryCode == "1") {
+            return when {
+                digits.length == 10 -> "1$digits"
+                digits.length == 11 && digits.startsWith("1") -> digits
+                else -> digits
+            }
         }
+        if (digits.startsWith(countryCode) && digits.length > countryCode.length + 7) return digits
+        val national = if (digits.startsWith("0") && countryCode != "39") digits.drop(1) else digits
+        return countryCode + national
+    }
+
+    /** The calling code for an ISO country (`us`, `it`…), for [matchKey]'s national numbers. */
+    fun callingCode(iso: String?): String = when (iso?.lowercase()) {
+        "it" -> "39"; "gb", "uk" -> "44"; "fr" -> "33"; "de" -> "49"; "es" -> "34"; "pt" -> "351"
+        "nl" -> "31"; "be" -> "32"; "ch" -> "41"; "at" -> "43"; "ie" -> "353"; "se" -> "46"
+        "no" -> "47"; "dk" -> "45"; "fi" -> "358"; "pl" -> "48"; "gr" -> "30"; "mx" -> "52"
+        "br" -> "55"; "ar" -> "54"; "co" -> "57"; "in" -> "91"; "au" -> "61"; "nz" -> "64"
+        "jp" -> "81"; "kr" -> "82"; "cn" -> "86"; "il" -> "972"; "za" -> "27"
+        else -> "1"
     }
 
     fun normalize(name: String): String =

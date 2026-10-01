@@ -268,7 +268,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (c.isGroup) return emptySet()
         val handle = c.participants.singleOrNull() ?: return emptySet()
         return if (c.isBeeper) BeeperIdentities.keysFor(app, handle)
-        else People.matchKey(handle)?.let { setOf(it) }.orEmpty()
+        else People.matchKey(handle, homeCallingCode)?.let { setOf(it) }.orEmpty()
+    }
+
+    /** This phone's country, for iMessage handles saved without a country code. */
+    private val homeCallingCode: String by lazy {
+        val tm = runCatching { app.getSystemService(android.telephony.TelephonyManager::class.java) }.getOrNull()
+        People.callingCode(tm?.networkCountryIso?.takeIf { it.isNotBlank() } ?: tm?.simCountryIso)
     }
 
     private fun nameFor(c: Conversation, contacts: Contacts): String? =

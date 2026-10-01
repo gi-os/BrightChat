@@ -57,6 +57,10 @@ class PeopleNumbersTest {
         assertTrue(People.matchKey("+393471234567") != People.matchKey("+13471234567"))
         assertEquals("13471234567", People.matchKey("(347) 123-4567"))
         assertEquals(null, People.matchKey("22395"))
+        // A national number on an Italian phone meets WhatsApp's international one.
+        assertEquals(People.matchKey("+393471234567"), People.matchKey("347 123 4567", "39"))
+        assertEquals(People.matchKey("+447700900123"), People.matchKey("07700 900123", "44"))
+        assertEquals("393471234567", People.matchKey("00393471234567"))
     }
 
     @Test fun chainedJoinsNeverPutTwoIMessageChatsInOneRow() {

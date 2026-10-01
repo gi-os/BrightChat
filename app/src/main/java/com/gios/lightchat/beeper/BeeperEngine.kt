@@ -281,7 +281,10 @@ object BeeperEngine {
         unsubscribeSync?.invoke()
         // A finished sync response, whatever the state flow says: a healthy loop stays RUNNING and
         // never re-emits, so the state alone left every poll thinking the loop was asleep.
-        lastSyncAt = android.os.SystemClock.elapsedRealtime()
+        // Not seeded here: a session restored by the poll alarm has not synced yet, and the alarm's
+        // wake must see that and sync inside its Doze window.
+        syncErrorSince = 0L
+        syncReported = false
         unsubscribeSync = runCatching {
             c.api.sync.subscribe(subscriber = { _ -> lastSyncAt = android.os.SystemClock.elapsedRealtime() })
         }.getOrNull()
@@ -387,7 +390,7 @@ object BeeperEngine {
             if (e.code == 403 || e.code == 401) {
                 // A wrong or expired code. Beeper won't take this request again either way.
                 _status.value = Status.CodeSent(prefs(ctx).getString(KEY_EMAIL, null).orEmpty())
-                throw IllegalArgumentException("That code didn’t work. Check it, or ask for a new one.")
+                throw WrongCodeException()
             }
             throw e
         }
@@ -422,7 +425,7 @@ object BeeperEngine {
             attach(c)
         }
     }.onFailure {
-        if (it is IllegalArgumentException) note("sign-in: ${it.message}") else fail("Couldn’t sign in to Beeper", it)
+        if (it is WrongCodeException) note("sign-in: ${it.message}") else fail("Couldn’t sign in to Beeper", it)
     }
 
     /**
@@ -500,6 +503,9 @@ object BeeperEngine {
             }
             client = null
             prefs(ctx).edit().clear().apply()
+            // The saved log names the account (its email, its rooms); it goes with it.
+            logWriter.execute { runCatching { File(ctx.filesDir, LOG_FILE).delete() } }
+            _log.value = emptyList()
             runCatching { ctx.deleteDatabase(DB) }
             runCatching { File(ctx.cacheDir, MEDIA_DIR).deleteRecursively() }
             val beeperGuids = MessageStore.get(ctx).chats().map { it.guid }.filter(BeeperMapping::isBeeper)
@@ -542,6 +548,9 @@ object BeeperEngine {
         }
     }
 
+    /** Beeper refused the emailed code: wrong, or expired. Not a bug, so never a report. */
+    class WrongCodeException : Exception("That code didn’t work. Check it, or ask for a new one.")
+
     /** A refusal from Beeper's login API, with its HTTP status. */
     class BeeperHttpException(val code: Int, message: String) : IllegalStateException(message)
 
@@ -567,6 +576,7 @@ object BeeperEngine {
 
     /** When sync last went into ERROR, 0 while it is healthy. */
     @Volatile private var syncErrorSince = 0L
+    @Volatile private var syncReported = false
 
     // ------------------------------------------------------------------ observers
 
@@ -578,6 +588,7 @@ object BeeperEngine {
                 lastSyncAt = android.os.SystemClock.elapsedRealtime()
                 if (syncErrorSince != 0L) note("sync is back")
                 syncErrorSince = 0L
+                syncReported = false
             }
             if (name == "ERROR") {
                 val now = android.os.SystemClock.elapsedRealtime()
@@ -585,8 +596,9 @@ object BeeperEngine {
                 if (syncErrorSince == 0L) {
                     syncErrorSince = now
                     note("sync is failing")
-                } else if (now - syncErrorSince > SYNC_REPORT_AFTER_MS && phoneOnline()) {
-                    // Ten minutes broken with a working network: that is ours to look at.
+                } else if (!syncReported && now - syncErrorSince > SYNC_REPORT_AFTER_MS && phoneOnline()) {
+                    // Ten minutes broken with a working network: that is ours to look at. Once.
+                    syncReported = true
                     autoReport("keep syncing", null)
                 }
             }
@@ -1155,7 +1167,12 @@ object BeeperEngine {
             note("send failed in ${roomId.full}: $why")
             // The bubble is about to be taken back; the outbox must not send it later behind the
             // user's back, or a retry arrives twice.
-            runCatching { c.room.cancelSendMessage(roomId, txn) }
+            try {
+                c.room.cancelSendMessage(roomId, txn)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
             val offline = why.contains("NetworkError") || why.contains("UnknownHost") || !phoneOnline()
             if (!offline) {
                 autoReport(if (sent == null) "send (no confirmation)" else "send (refused)", IllegalStateException(why))

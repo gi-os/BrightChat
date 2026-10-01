@@ -141,7 +141,8 @@ object BeeperAlerts {
         // bring back one the user dismissed.
         if (!fresh) {
             val guid = posted[id] ?: return
-            if (!Notifications.isShowing(ctx, guid)) return
+            // In the app, alerts wait in PendingAlerts rather than the shade; an edit still counts.
+            if (!AppForeground.active && !Notifications.isShowing(ctx, guid)) return
         }
         // Invites and other state changes: the list shows them, nothing to say out loud.
         val te = (content as? NotificationUpdate.Content.Message)?.timelineEvent ?: return

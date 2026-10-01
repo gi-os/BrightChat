@@ -78,7 +78,7 @@ object BeeperIdentities {
 
     /** The number in a WhatsApp ghost's id, as a key. Empty for everyone else. */
     fun fromUserId(userId: String): Set<String> =
-        WHATSAPP_NUMBER.find(userId)?.groupValues?.get(1)?.let { People.matchKey(it) }?.let { setOf(it) }.orEmpty()
+        WHATSAPP_NUMBER.find(userId)?.groupValues?.get(1)?.let { People.matchKey("+$it") }?.let { setOf(it) }.orEmpty()
 
     /**
      * The keys in a raw `m.room.member` content. `tel:` and `mailto:` only; anything else a bridge
