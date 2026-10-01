@@ -468,6 +468,7 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
+| v2.51.x | A one-time **What's new** page on launch: Beeper, one row per person, notifications, any emoji, Instagram, calls and voicemail, with **Set up Beeper** straight to Settings |
 | v2.50.x | Hardening pass before the first official Beeper release: replies and tapbacks in a person's thread always go back to the chat the message came from; chained matches can't put two people in one row; numbers from different countries no longer match; sign-in can't get stuck; Beeper reports only real faults; Send log and Sign out take two taps; Instagram reels download to disk, one plays at a time, and a link that won't load still shows |
 | v2.48.x (nightly) | Any emoji as a Beeper reaction (search, recents, every group); people joined by phone number or email; Instagram posts and reels shown in the thread, reels playing in place |
 | v2.47.x (nightly) | **Beeper notifications**: alerts for WhatsApp, Signal and the rest, following your Beeper mute settings, with an ntfy wake-up while the phone sleeps. Beeper works with no Mac set up at all |

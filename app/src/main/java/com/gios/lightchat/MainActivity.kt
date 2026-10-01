@@ -310,6 +310,10 @@ class MainActivity : ComponentActivity() {
 fun LightChatApp(viewModel: ChatViewModel) {
     val state by viewModel.state.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
+    // The once-per-release "What's new" page. Read once per process; dismissing it writes the
+    // edition so it never comes back for this release.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var whatsNew by remember { mutableStateOf(com.gios.lightchat.ui.WhatsNew.shouldShow(context)) }
 
     // Which conversation tab is showing, and where each one is scrolled to. Both
     // live *here*, above the `when` — ConversationsScreen is removed from the
@@ -349,6 +353,7 @@ fun LightChatApp(viewModel: ChatViewModel) {
     // composition commits, and the field is meant to be the last screen that actually drew.
     val screenName = when {
         !state.isConfigured -> "setup"
+        whatsNew && state.open == null -> "whats-new"
         state.newsletterEditor != null -> "newsletter-editor"
         state.newsletterCompose != null -> "newsletter-compose"
         state.newsletterList -> "newsletters"
@@ -366,7 +371,30 @@ fun LightChatApp(viewModel: ChatViewModel) {
         !state.isConfigured -> {
             // A rejected password sends us back here; make sure settings is dismissed.
             showSettings = false
+            // A first run: setup already offers Beeper, so the page has nothing to add. Seen.
+            if (whatsNew) {
+                SideEffect {
+                    com.gios.lightchat.ui.WhatsNew.markSeen(context)
+                    whatsNew = false
+                }
+            }
             SetupScreen(viewModel)
+        }
+        // Not over a thread a notification opened: that comes first, the page waits for next time.
+        whatsNew && state.open == null -> {
+            val done = {
+                com.gios.lightchat.ui.WhatsNew.markSeen(context)
+                whatsNew = false
+            }
+            BackHandler { done() }
+            com.gios.lightchat.ui.WhatsNewScreen(
+                beeperOn = state.beeperOn,
+                onSetUpBeeper = {
+                    done()
+                    showSettings = true
+                },
+                onDone = done,
+            )
         }
         // Newsletter, innermost first: the editor and the composer are both opened *from* the
         // batch list, so they have to be matched before it or opening either would still draw
