@@ -64,4 +64,12 @@ class InstagramTest {
         assertEquals("Someone on Instagram: \"hey\"", post.caption)
         assertNull(Instagram.parseEmbed("E2", "<html></html>"))
     }
+
+    @Test fun mediaOnlyFromInstagramsCdn() {
+        assertTrue(Instagram.isMediaHost("https://scontent-phl2-1.cdninstagram.com/v/x.jpg"))
+        assertTrue(Instagram.isMediaHost("https://video.fbcdn.net/x.mp4"))
+        assertTrue(!Instagram.isMediaHost("http://scontent.cdninstagram.com/x.jpg"))
+        assertTrue(!Instagram.isMediaHost("https://evil.example.com/cdninstagram.com.mp4"))
+        assertTrue(!Instagram.isMediaHost("https://www.instagram.com/accounts/login/"))
+    }
 }

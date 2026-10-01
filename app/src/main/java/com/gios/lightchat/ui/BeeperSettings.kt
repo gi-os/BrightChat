@@ -106,29 +106,29 @@ fun BeeperSection() {
                 }
                 PushRows(act = { block -> run(block) })
                 Spacer(modifier = Modifier.height(18.dp))
-                HapticText(
+                // Two taps. One sign-out costs the recovery key again, and this row sits under
+                // rows that change height as the push line refreshes.
+                ArmedText(
                     text = "Sign out of Beeper",
+                    armedText = "Tap again to sign out",
                     style = ChatType.body,
                     color = ChatColors.onSurfaceDim,
-                    onClick = { run { BeeperEngine.signOut(); Result.success(Unit) } },
+                    onConfirm = { run { BeeperEngine.signOut(); Result.success(Unit) } },
                 )
             }
         }
         if (busy) Line("Working…")
         error?.let { Line(it) }
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(24.dp))
         HapticText(
             text = if (showLog) "Hide log" else "Show log",
             style = ChatType.hint,
             color = ChatColors.onSurfaceDisabled,
             onClick = { showLog = !showLog },
         )
-        HapticText(
-            text = "Send log",
-            style = ChatType.hint,
-            color = ChatColors.onSurfaceDisabled,
-            onClick = { run { BeeperEngine.sendLogNow(); Result.success(Unit) } },
-        )
+        // Sending lives inside the open log, with a confirming second tap and a "Sent" that holds
+        // for a minute. Before, it was a bare link right under Show log: every failure was
+        // followed by a burst of reports, most of them empty, from taps meant for something else.
         if (showLog) {
             Text(
                 text = log.takeLast(40).joinToString("\n").ifEmpty { "Nothing yet." },
@@ -137,6 +137,29 @@ fun BeeperSection() {
                 textAlign = TextAlign.Start,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
+            if (BeeperEngine.hasLog()) {
+                Spacer(modifier = Modifier.height(24.dp))
+                var sentAt by remember { mutableStateOf(0L) }
+                LaunchedEffect(sentAt) {
+                    if (sentAt != 0L) {
+                        delay(60_000)
+                        sentAt = 0L
+                    }
+                }
+                if (sentAt != 0L) {
+                    Line("Sent. Thank you.")
+                } else {
+                    ArmedText(
+                        text = "Send this log",
+                        armedText = "Tap again to send",
+                        style = ChatType.hint,
+                        color = ChatColors.onSurfaceDim,
+                        onConfirm = {
+                            scope.launch { if (BeeperEngine.sendLogNow()) sentAt = System.currentTimeMillis() }
+                        },
+                    )
+                }
+            }
         }
     }
 }
@@ -186,6 +209,40 @@ private fun PushRows(act: (suspend () -> Result<Unit>) -> Unit) {
             )
         }
     }
+}
+
+/**
+ * A text action that needs two taps: the first turns it into [armedText] for four seconds, the
+ * second within that time runs [onConfirm].
+ */
+@Composable
+private fun ArmedText(
+    text: String,
+    armedText: String,
+    style: androidx.compose.ui.text.TextStyle,
+    color: androidx.compose.ui.graphics.Color,
+    onConfirm: () -> Unit,
+) {
+    var armed by remember { mutableStateOf(false) }
+    LaunchedEffect(armed) {
+        if (armed) {
+            delay(4_000)
+            armed = false
+        }
+    }
+    HapticText(
+        text = if (armed) armedText else text,
+        style = style,
+        color = if (armed) ChatColors.onSurface else color,
+        onClick = {
+            if (armed) {
+                armed = false
+                onConfirm()
+            } else {
+                armed = true
+            }
+        },
+    )
 }
 
 @Composable

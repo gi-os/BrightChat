@@ -168,7 +168,10 @@ object BeeperPush {
             append = false,
         )
         runCatching { c.api.push.setPushers(request).getOrThrow() }
-            .onSuccess { BeeperEngine.note("push: registered on ${URL(server).host}") }
+            .onSuccess {
+                val host = URL(server).host
+                BeeperEngine.note("push: registered on ${if (server == DEFAULT_SERVER) host else "your server"}")
+            }
             .onFailure { BeeperEngine.note("push: registration failed, the poll still runs: ${it.message}") }
     }
 
@@ -178,9 +181,25 @@ object BeeperPush {
         topic: String,
         onPush: suspend (String?, String?) -> Unit,
     ) {
+        // Pushes are wake-ups, and a wake is one sync whatever it was for: a burst of twenty pushes
+        // while a sync is running needs one more sync, not twenty in a row.
+        val wakes = kotlinx.coroutines.channels.Channel<Pair<String?, String?>>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        launch {
+            for ((room, event) in wakes) {
+                try {
+                    onPush(room, event)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    BeeperEngine.note("push: wake failed: ${e.message}")
+                }
+            }
+        }
         var backoff = RECONNECT_BASE_MS
+        var lastDrop: String? = null
         while (isActive) {
             val since = prefs(ctx).getString(KEY_LAST_ID, null)
+            var openedAt = 0L
             try {
                 val c = (URL(streamUrl(server, topic, since)).openConnection() as HttpURLConnection).apply {
                     connectTimeout = CONNECT_TIMEOUT_MS
@@ -191,31 +210,41 @@ object BeeperPush {
                 val code = c.responseCode
                 if (code !in 200..299) error("HTTP $code")
                 connected = true
-                backoff = RECONNECT_BASE_MS
-                BeeperEngine.note("push: stream open")
+                openedAt = android.os.SystemClock.elapsedRealtime()
+                if (lastDrop != null || backoff == RECONNECT_BASE_MS) BeeperEngine.note("push: stream open")
                 c.inputStream.bufferedReader().use { reader ->
                     while (isActive) {
                         val line = reader.readLine() ?: break
                         val push = parse(line) ?: continue
                         if (push.id != null) prefs(ctx).edit().putString(KEY_LAST_ID, push.id).apply()
                         lastPushAt = System.currentTimeMillis()
-                        runCatching { onPush(push.roomId, push.eventId) }
-                            .onFailure { if (it is CancellationException) throw it }
+                        wakes.trySend(push.roomId to push.eventId)
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (isActive) BeeperEngine.note("push: stream dropped: ${e.message}")
+                // Once per kind of drop, not once per retry: an hour offline is one line.
+                val why = e.message ?: e.javaClass.simpleName
+                if (isActive && why != lastDrop) BeeperEngine.note("push: stream dropped: $why")
+                lastDrop = why
             } finally {
                 connected = false
                 runCatching { conn?.disconnect() }
                 conn = null
             }
             if (!isActive) break
+            // Only a stream that held for a minute earns a quick reconnect. A portal or proxy that
+            // answers 200 and hangs up straight away would otherwise be redialled every 5 s.
+            val held = openedAt != 0L && android.os.SystemClock.elapsedRealtime() - openedAt > 60_000L
+            if (held) {
+                backoff = RECONNECT_BASE_MS
+                lastDrop = null
+            }
             delay(backoff)
             backoff = (backoff * 2).coerceAtMost(RECONNECT_MAX_MS)
         }
+        wakes.close()
     }
 
     /** One push off the stream: ntfy's message id, and the room and event it names if any. */

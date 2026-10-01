@@ -87,6 +87,13 @@ object Notifications {
             .forEach { manager.cancel(it.id) }
     }
 
+    /** Whether [chatGuid]'s notification is in the shade right now. */
+    fun isShowing(context: Context, chatGuid: String): Boolean {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        val id = messageId(chatGuid)
+        return runCatching { manager.activeNotifications.any { it.id == id } }.getOrDefault(false)
+    }
+
     /** Cancels one chat's notification — it was read on another device (or opened
      *  here), so the alert is stale. [chatGuids] because a forked group spans rooms. */
     fun clearChat(context: Context, chatGuids: List<String>) {

@@ -1,7 +1,7 @@
 package com.gios.lightchat.beeper
 
 import android.content.Context
-import com.gios.lightchat.Contacts
+import com.gios.lightchat.people.People
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -20,11 +20,12 @@ import java.util.concurrent.ConcurrentHashMap
  *    no type for, so [BeeperEngine] reads that one event raw, once per person, and this keeps the
  *    answer.
  *
- * Keys are [Contacts.key] form — the last ten digits, or a lowercased email — the same form the
+ * Keys are [People.matchKey] form — every digit, or a lowercased email — the same form the
  * address book and iMessage handles already use, so a match is a plain set intersection.
  */
 object BeeperIdentities {
-    private const val PREFS = "beeper_ids"
+    // v2: keys are People.matchKey (full digits). The first version kept Contacts.key's last ten.
+    private const val PREFS = "beeper_ids2"
 
     /** Look again after this long when the bridge said nothing; people add numbers. */
     private const val RETRY_EMPTY_MS = 7L * 24 * 60 * 60 * 1000
@@ -77,7 +78,7 @@ object BeeperIdentities {
 
     /** The number in a WhatsApp ghost's id, as a key. Empty for everyone else. */
     fun fromUserId(userId: String): Set<String> =
-        WHATSAPP_NUMBER.find(userId)?.groupValues?.get(1)?.let { setOf(Contacts.key(it)) }.orEmpty()
+        WHATSAPP_NUMBER.find(userId)?.groupValues?.get(1)?.let { People.matchKey(it) }?.let { setOf(it) }.orEmpty()
 
     /**
      * The keys in a raw `m.room.member` content. `tel:` and `mailto:` only; anything else a bridge
@@ -89,10 +90,9 @@ object BeeperIdentities {
         for (i in 0 until ids.length()) {
             val id = ids.optString(i).trim()
             when {
-                id.startsWith("tel:", ignoreCase = true) ->
-                    Contacts.key(id.substring(4)).takeIf { it.length >= 7 }?.let(out::add)
+                id.startsWith("tel:", ignoreCase = true) -> People.matchKey(id.substring(4))?.let(out::add)
                 id.startsWith("mailto:", ignoreCase = true) ->
-                    id.substring(7).lowercase().takeIf { it.contains("@") }?.let(out::add)
+                    id.substring(7).takeIf { it.contains("@") }?.let(People::matchKey)?.let(out::add)
             }
         }
         return out

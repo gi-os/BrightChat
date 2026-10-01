@@ -268,7 +268,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (c.isGroup) return emptySet()
         val handle = c.participants.singleOrNull() ?: return emptySet()
         return if (c.isBeeper) BeeperIdentities.keysFor(app, handle)
-        else setOf(Contacts.key(handle)).filter { it.length >= 7 }.toSet()
+        else People.matchKey(handle)?.let { setOf(it) }.orEmpty()
     }
 
     private fun nameFor(c: Conversation, contacts: Contacts): String? =
@@ -279,7 +279,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun memberFor(convo: Conversation, message: ChatMessage): Conversation {
         if (!convo.isPerson) return convo
         val room = message.room
-        return convo.members.firstOrNull { room != null && room in it.guids } ?: sendTargetFor(convo)
+        convo.members.firstOrNull { room != null && room in it.guids }?.let { return it }
+        // No tag: never guess across backends. A Matrix event id belongs to a Beeper chat, anything
+        // else to iMessage, and a reply or a tapback sent to the other one would go to the wrong
+        // place or nowhere.
+        val beeper = BeeperMapping.isMatrixEvent(message.guid)
+        val sameBackend = convo.members.filter { it.isBeeper == beeper }
+        val target = sendTargetFor(convo)
+        return when {
+            target.isBeeper == beeper -> target
+            sameBackend.isNotEmpty() -> sameBackend.maxBy { it.lastDate }
+            else -> target
+        }
     }
 
     /** What can be done to [message]: asked of the chat it came from, not of the person row. */
@@ -449,6 +460,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     beeperServiceStarted = true
                     startSocket()
                 }
+                // Signing out stops the service on a phone with no Mac; the next sign-in must start it.
+                if (status is BeeperEngine.Status.SignedOut) beeperServiceStarted = false
                 if (status is BeeperEngine.Status.Ready && !_state.value.isConfigured) {
                     _state.update { it.copy(isConfigured = true, status = Status.Ready) }
                     reloadBeeperRows()
@@ -1476,7 +1489,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      *  in case the socket echo already landed under the real guid. */
     private fun reconcileEcho(convoGuid: String, tempGuid: String, sent: ChatMessage) {
         updateOpenThread(convoGuid) { list ->
-            list.map { if (it.guid == tempGuid) sent else it }.distinctBy { it.guid }
+            list.map { old ->
+                if (old.guid == tempGuid) (if (sent.room == null) sent.copy(room = old.room) else sent) else old
+            }.distinctBy { it.guid }
         }
     }
 
@@ -1666,6 +1681,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             associatedMessageGuid = target.guid,
             associatedMessageType = apiValue, // "love" or "-love"
             associatedMessageEmoji = key,
+            room = member.guid.takeIf { convo.isPerson },
         )
         // Matrix takes a reaction back by redacting the reaction event, so find ours now, on the
         // thread that owns openRaw.
@@ -3168,7 +3184,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         // Fold the message into the open thread's raw list (a tapback lands on its
         // target; a normal message appends). foldReactions re-runs in updateOpenThread.
-        updateOpenThread(incoming.chatGuid) { mergeRaw(it, incoming.message) }
+        // Tagged with the chat it arrived in, so a person's thread routes a reply to it back there.
+        val tagged = if (incoming.message.room == null) incoming.message.copy(room = incoming.chatGuid) else incoming.message
+        updateOpenThread(incoming.chatGuid) { mergeRaw(it, tagged) }
         // If it's an incoming message in the thread you're looking at, mark the chat
         // read so the unread clears on your other devices too — and record the clear
         // locally so a refresh can't resurrect the dot before the server catches up.
@@ -3390,11 +3408,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         Store.signOut(app)
         // Still signed in to Beeper: the service goes on without the socket.
         if (BeeperEngine.hasSession(app)) startSocket()
-        clearStore()
         messageCache.clear()
-        // The store was shared: Beeper's rows went with it, so have Beeper write them again.
-        BeeperEngine.invalidateRows()
-        _state.value = UiState(isConfigured = BeeperEngine.hasSession(app), message = message)
+        // The store was shared: Beeper's rows go with it, so Beeper writes them again — after the
+        // DELETE, or the rewrite could land first and be wiped.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { store.clear() }
+            BeeperEngine.invalidateRows()
+        }
+        val beeper = BeeperEngine.hasSession(app)
+        // A fresh state, minus what belongs to Beeper and People, which are still signed in and
+        // whose status flow will not emit again to put them back.
+        _state.value = UiState(
+            isConfigured = beeper,
+            message = message,
+            beeperOn = beeper,
+            links = PeopleStore.load(app),
+            defaultNetwork = PeopleStore.defaultNetwork(app),
+        )
     }
 
     override fun onCleared() {

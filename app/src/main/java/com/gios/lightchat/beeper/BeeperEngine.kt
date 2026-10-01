@@ -82,6 +82,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -144,6 +147,13 @@ object BeeperEngine {
     private const val KEY_USER = "user_id"
     private const val KEY_REQUEST = "login_request"
     private const val KEY_EMAIL = "email"
+    private const val KEY_REQUEST_AT = "login_request_at"
+
+    /** How long an emailed code is worth entering. Beeper's own expiry is shorter than a day. */
+    private const val CODE_TTL_MS = 10 * 60_000L
+
+    /** How long sync must stay broken, with the phone online, before it is worth a report. */
+    private const val SYNC_REPORT_AFTER_MS = 10 * 60_000L
     private const val DB = "beeper_matrix"
     private const val MEDIA_DIR = "beeper_media"
     private const val DEVICE_NAME = "BrightChat (Light Phone)"
@@ -184,6 +194,7 @@ object BeeperEngine {
     private val lifecycle = Mutex()
 
     @Volatile private var client: MatrixClient? = null
+    @Volatile private var unsubscribeSync: (() -> Unit)? = null
     @Volatile private var appContext: Context? = null
     private var observers: Job? = null
 
@@ -215,7 +226,14 @@ object BeeperEngine {
         appContext = context.applicationContext
         if (!hasSession(context)) {
             prefs(context).getString(KEY_EMAIL, null)?.let { email ->
-                if (prefs(context).getString(KEY_REQUEST, null) != null) _status.value = Status.CodeSent(email)
+                val at = prefs(context).getLong(KEY_REQUEST_AT, 0L)
+                val fresh = System.currentTimeMillis() - at < CODE_TTL_MS
+                if (prefs(context).getString(KEY_REQUEST, null) != null && fresh) {
+                    _status.value = Status.CodeSent(email)
+                } else {
+                    // A code older than Beeper keeps it is a 403 waiting to happen; start over.
+                    prefs(context).edit().remove(KEY_REQUEST).remove(KEY_REQUEST_AT).apply()
+                }
             }
             return
         }
@@ -225,18 +243,28 @@ object BeeperEngine {
     private suspend fun ensureClient(): MatrixClient? = lifecycle.withLock {
         client?.let { return@withLock it }
         val ctx = appContext ?: return@withLock null
+        // Signed out (or signing out): nothing to restore. Without this a thread still open, or a
+        // send queued behind the sign-out, recreated the deleted database and reported a failure.
+        if (!hasSession(ctx)) return@withLock null
+        val before = _status.value
         _status.value = Status.Working
         note("restoring session")
-        val restored = MatrixClient.create(
+        val restored = try {
+            MatrixClient.create(
             repositoriesModule = RepositoriesModule.room(databaseBuilder(ctx)),
             mediaStoreModule = MediaStoreModule.okio(mediaDir(ctx)),
             cryptoDriverModule = CryptoDriverModule.libOlm(),
             authProviderData = null,
             configuration = configuration(),
-        ).getOrElse { e ->
-            note("restore failed: ${e.message}")
-            autoReport("restore the session", e)
-            null
+            ).getOrElse { e ->
+                note("restore failed: ${e.message}")
+                if (!isNetworkError(e)) autoReport("restore the session", e)
+                null
+            }
+        } catch (e: CancellationException) {
+            // The caller went away mid-restore; the status must not stay on "Working".
+            if (_status.value == Status.Working) _status.value = before
+            throw e
         }
         if (restored == null) {
             _status.value = Status.Failed("Couldn’t restore the Beeper session. Sign in again.")
@@ -250,6 +278,13 @@ object BeeperEngine {
     private fun attach(c: MatrixClient) {
         client = c
         observers?.cancel()
+        unsubscribeSync?.invoke()
+        // A finished sync response, whatever the state flow says: a healthy loop stays RUNNING and
+        // never re-emits, so the state alone left every poll thinking the loop was asleep.
+        lastSyncAt = android.os.SystemClock.elapsedRealtime()
+        unsubscribeSync = runCatching {
+            c.api.sync.subscribe(subscriber = { _ -> lastSyncAt = android.os.SystemClock.elapsedRealtime() })
+        }.getOrNull()
         observers = scope.launch {
             launch {
                 runCatching { c.startSync(Presence.OFFLINE) }.onFailure {
@@ -297,7 +332,22 @@ object BeeperEngine {
     // ------------------------------------------------------------------ login
 
     /** Step 1: Beeper emails [email] a six-digit code. */
-    suspend fun requestCode(email: String): Result<Unit> = withContext(Dispatchers.IO) { requestCodeBlocking(email) }
+    suspend fun requestCode(email: String): Result<Unit> = onEngine { requestCodeBlocking(email) }
+
+    /**
+     * Runs a login step on the engine's own scope and waits for it. The Settings screen calls
+     * these from its composition scope; leaving the screen mid-step used to cancel the step
+     * after Beeper had already used up the code, leaving the status on "Working" for good.
+     */
+    private suspend fun <T> onEngine(block: suspend () -> Result<T>): Result<T> {
+        val job = scope.async { block() }
+        return try {
+            job.await()
+        } catch (e: CancellationException) {
+            // The screen went away; the step carries on and its outcome lands in [status].
+            throw e
+        }
+    }
 
     // Network and disk, so never on the caller's thread: the Settings field calls this from a
     // Compose scope, which is the main thread (v2.44.91 failed with NetworkOnMainThreadException).
@@ -308,27 +358,50 @@ object BeeperEngine {
         val init = beeperPost("/user/login", "{}")
         val request = init.optString("request").takeIf { it.isNotBlank() } ?: error("Beeper didn’t start a login.")
         beeperPost("/user/login/email", JSONObject().put("request", request).put("email", address).toString())
-        prefs(ctx).edit().putString(KEY_REQUEST, request).putString(KEY_EMAIL, address).apply()
+        prefs(ctx).edit().putString(KEY_REQUEST, request).putString(KEY_EMAIL, address)
+            .putLong(KEY_REQUEST_AT, System.currentTimeMillis()).apply()
         _status.value = Status.CodeSent(address)
         note("code sent to $address")
-    }.onFailure { fail("Couldn’t send the code", it) }
+    }.onFailure {
+        if (it is IllegalArgumentException) {
+            note("code: ${it.message}")
+            _status.value = Status.Failed(it.message.orEmpty())
+        } else {
+            fail("Couldn’t send the code", it)
+        }
+    }
 
     /** Step 2: trades the emailed [code] for a Matrix session on Beeper's homeserver. */
-    suspend fun signIn(code: String): Result<Unit> = withContext(Dispatchers.IO) { signInBlocking(code) }
+    suspend fun signIn(code: String): Result<Unit> = onEngine { signInBlocking(code) }
 
     private suspend fun signInBlocking(code: String): Result<Unit> = runCatching {
         val ctx = appContext ?: error("not started")
         val request = prefs(ctx).getString(KEY_REQUEST, null) ?: error("Ask for a code first.")
         _status.value = Status.Working
-        val response = beeperPost(
-            "/user/login/response",
-            JSONObject().put("request", request).put("response", code.trim()).toString(),
-        )
+        val response = try {
+            beeperPost(
+                "/user/login/response",
+                JSONObject().put("request", request).put("response", code.trim()).toString(),
+            )
+        } catch (e: BeeperHttpException) {
+            if (e.code == 403 || e.code == 401) {
+                // A wrong or expired code. Beeper won't take this request again either way.
+                _status.value = Status.CodeSent(prefs(ctx).getString(KEY_EMAIL, null).orEmpty())
+                throw IllegalArgumentException("That code didn’t work. Check it, or ask for a new one.")
+            }
+            throw e
+        }
+        // The request is spent from here on, whatever happens next.
+        prefs(ctx).edit().remove(KEY_REQUEST).remove(KEY_REQUEST_AT).apply()
         val username = response.optJSONObject("whoami")?.optJSONObject("userInfo")?.optString("username")
             ?.takeIf { it.isNotBlank() } ?: error("Beeper didn’t say who you are.")
         val token = response.optString("token").takeIf { it.isNotBlank() } ?: error("Beeper didn’t hand back a login.")
         lifecycle.withLock {
-            client?.let { runCatching { it.stopSync() } }
+            observers?.cancel()
+            client?.let { old ->
+                runCatching { old.stopSync() }
+                runCatching { old.closeSuspending() }
+            }
             client = null
             val auth = MatrixClientAuthProviderData.classicLogin(
                 baseUrl = Url(HOMESERVER),
@@ -345,10 +418,12 @@ object BeeperEngine {
                 authProviderData = auth,
                 configuration = configuration(),
             ).getOrThrow()
-            prefs(ctx).edit().putString(KEY_USER, c.userId.full).remove(KEY_REQUEST).apply()
+            prefs(ctx).edit().putString(KEY_USER, c.userId.full).apply()
             attach(c)
         }
-    }.onFailure { fail("Couldn’t sign in to Beeper", it) }
+    }.onFailure {
+        if (it is IllegalArgumentException) note("sign-in: ${it.message}") else fail("Couldn’t sign in to Beeper", it)
+    }
 
     /**
      * Verifies this phone with the account's recovery key, which is what lets it read encrypted
@@ -360,7 +435,7 @@ object BeeperEngine {
      * fenleon/chats, where the reasoning is written out in full.
      */
     suspend fun verifyWithRecoveryKey(recoveryKey: String): Result<Unit> =
-        withContext(Dispatchers.IO) { verifyBlocking(recoveryKey) }
+        onEngine { verifyBlocking(recoveryKey) }
 
     private suspend fun verifyBlocking(recoveryKey: String): Result<Unit> = runCatching {
         val c = client ?: error("Sign in first.")
@@ -375,7 +450,8 @@ object BeeperEngine {
         val key = recoveryKey.filter { it.isLetterOrDigit() }
         require(key.length >= 48) { "A recovery key is 48 characters; that was ${key.length}." }
         val bad = key.firstOrNull { it !in BASE58 }
-        require(bad == null) { "That recovery key has a character that can't appear in one: '$bad'. Check it and try again." }
+        // The character itself is not named: the log goes out with every later report.
+        require(bad == null) { "That recovery key has a character that can't appear in one. Check it and try again." }
         val keyBytes = decodeRecoveryKey(key)
         val accountData = c.di.get<GlobalAccountDataStore>(GlobalAccountDataStore::class)
         val keyId = accountData.get(DefaultSecretKeyEventContent::class).first()?.content?.key
@@ -398,16 +474,22 @@ object BeeperEngine {
         }
         throw e
     }.onFailure {
+        if (it is CancellationException) throw it
         note("verify failed: ${it.message}")
-        if (it !is IllegalArgumentException) autoReport("verify with the recovery key", it)
+        if (it !is IllegalArgumentException && !isNetworkError(it)) autoReport("verify with the recovery key", it)
     }
 
-    suspend fun signOut() = withContext(Dispatchers.IO) { signOutBlocking() }
+    suspend fun signOut() {
+        scope.async { signOutBlocking() }.await()
+    }
 
     private suspend fun signOutBlocking() {
         val ctx = appContext ?: return
         lifecycle.withLock {
             observers?.cancel()
+            identityJob?.cancel()
+            unsubscribeSync?.invoke()
+            unsubscribeSync = null
             client?.let { c -> withTimeoutOrNull(5_000) { BeeperPush.unregister(ctx, c) } }
             BeeperPush.forget(ctx)
             BeeperAlerts.forget(ctx)
@@ -422,6 +504,9 @@ object BeeperEngine {
             runCatching { File(ctx.cacheDir, MEDIA_DIR).deleteRecursively() }
             val beeperGuids = MessageStore.get(ctx).chats().map { it.guid }.filter(BeeperMapping::isBeeper)
             MessageStore.get(ctx).deleteChat(beeperGuids)
+            // Their alerts would open chats that no longer exist.
+            runCatching { com.gios.lightchat.Notifications.clearChat(ctx, beeperGuids) }
+            beeperGuids.forEach { runCatching { com.gios.lightchat.HeadsUp.cancel(it) } }
             rowCache.clear()
             _status.value = Status.SignedOut
             note("signed out")
@@ -449,7 +534,7 @@ object BeeperEngine {
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (code !in 200..299) {
                 val reason = runCatching { JSONObject(text).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
-                error(reason ?: "Beeper said HTTP $code")
+                throw BeeperHttpException(code, reason ?: "Beeper said HTTP $code")
             }
             return if (text.isBlank()) JSONObject() else JSONObject(text)
         } finally {
@@ -457,15 +542,56 @@ object BeeperEngine {
         }
     }
 
+    /** A refusal from Beeper's login API, with its HTTP status. */
+    class BeeperHttpException(val code: Int, message: String) : IllegalStateException(message)
+
+    /** No network, DNS gone, a socket cut: the phone's problem, not a bug worth a report. */
+    fun isNetworkError(t: Throwable?): Boolean {
+        var e = t
+        var depth = 0
+        while (e != null && depth < 8) {
+            if (e is java.net.UnknownHostException || e is java.net.SocketException ||
+                e is java.net.SocketTimeoutException || e is java.io.InterruptedIOException ||
+                e is javax.net.ssl.SSLException
+            ) return true
+            val m = e.message.orEmpty()
+            if (m.contains("UnknownHost") || m.contains("Unable to resolve host") ||
+                m.contains("NetworkError") || m.contains("timed out", ignoreCase = true) ||
+                m.contains("connection abort", ignoreCase = true) || m.contains("Connection reset", ignoreCase = true)
+            ) return true
+            e = e.cause
+            depth++
+        }
+        return false
+    }
+
+    /** When sync last went into ERROR, 0 while it is healthy. */
+    @Volatile private var syncErrorSince = 0L
+
     // ------------------------------------------------------------------ observers
 
     private suspend fun watchStatus(c: MatrixClient) {
+        var last: String? = null
         c.syncState.collectLatest { sync ->
-            if (sync.name.equals("RUNNING", ignoreCase = true)) lastSyncAt = android.os.SystemClock.elapsedRealtime()
-            if (sync.name.equals("ERROR", ignoreCase = true)) {
-                note("sync is failing")
-                autoReport("keep syncing", null)
+            val name = sync.name.uppercase()
+            if (name == "RUNNING") {
+                lastSyncAt = android.os.SystemClock.elapsedRealtime()
+                if (syncErrorSince != 0L) note("sync is back")
+                syncErrorSince = 0L
             }
+            if (name == "ERROR") {
+                val now = android.os.SystemClock.elapsedRealtime()
+                // Once per outage, not once per retry: the loop retries every few seconds.
+                if (syncErrorSince == 0L) {
+                    syncErrorSince = now
+                    note("sync is failing")
+                } else if (now - syncErrorSince > SYNC_REPORT_AFTER_MS && phoneOnline()) {
+                    // Ten minutes broken with a working network: that is ours to look at.
+                    autoReport("keep syncing", null)
+                }
+            }
+            if (name == last) return@collectLatest
+            last = name
             val verified = runCatching {
                 withTimeoutOrNull(5_000) { c.key.getTrustLevel(c.userId, c.deviceId).firstOrNull() }
             }.getOrNull() is DeviceTrustLevel.CrossSigned
@@ -495,14 +621,28 @@ object BeeperEngine {
             delay(1_500)
             val ctx = appContext ?: return@collectLatest
             val store = MessageStore.get(ctx)
-            val joined = rooms.values.mapNotNull { flow ->
-                runCatching { withTimeoutOrNull(2_000) { flow.firstOrNull() } }.getOrNull()
-            }.filter { room ->
+            // Read every room; a room that did not answer in time is unknown, not gone.
+            var unread = 0
+            val read = rooms.map { (id, flow) ->
+                val room = try {
+                    withTimeoutOrNull(2_000) { flow.firstOrNull() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                if (room == null) unread++
+                id.full to room
+            }
+            currentCoroutineContext().ensureActive()
+            val joined = read.mapNotNull { it.second }.filter { room ->
                 room.membership == Membership.JOIN &&
                     room.createEventContent?.type !is CreateEventContent.RoomType.Space
             }.sortedByDescending { it.lastRelevantEventTimestamp }
-            val live = joined.mapTo(HashSet()) { it.roomId.full }
-            val gone = rowCache.keys.filter { it !in live }
+            // Gone means Trixnity no longer lists it, or lists it as left, banned or a space.
+            val stillListed = read.filter { (_, room) -> room == null || room.membership == Membership.JOIN }
+                .mapTo(HashSet()) { it.first }
+            val gone = rowCache.keys.filter { it !in stillListed }
             gone.forEach { rowCache.remove(it) }
             if (gone.isNotEmpty()) {
                 store.deleteChat(gone.map(BeeperMapping::roomGuid))
@@ -573,9 +713,9 @@ object BeeperEngine {
             for ((roomId, user) in wanted) {
                 val keys = runCatching { memberIdentifiers(c, roomId, user) }
                     .onFailure { if (it is CancellationException) throw it }
-                    // A refusal (no such member, a bridge that sets nothing) is an answer too:
-                    // kept as empty, so it is asked again in a week rather than every pass.
-                    .getOrDefault(emptySet())
+                    // A refusal (no such member, a bridge that sets nothing) is an answer too, kept
+                    // as empty so it is asked again in a week. No network is not an answer.
+                    .getOrElse { e -> if (isNetworkError(e)) return@launch else emptySet() }
                 BeeperIdentities.remember(ctx, user, keys)
                 if (keys.isNotEmpty()) found++
                 delay(150)
@@ -691,6 +831,7 @@ object BeeperEngine {
         val stale = android.os.SystemClock.elapsedRealtime() - lastSyncAt > SYNC_STALE_MS
         if (!stale && reason == "poll") return
         val ok = withTimeoutOrNull(CATCH_UP_BUDGET_MS) { c.syncOnce(Presence.OFFLINE).isSuccess } ?: false
+        if (ok) lastSyncAt = android.os.SystemClock.elapsedRealtime()
         if (!ok) note("wake ($reason): sync didn’t finish")
         val state = c.syncState.value.name
         if (state.equals("STOPPED", true) || state.equals("ERROR", true)) {
@@ -1012,8 +1153,14 @@ object BeeperEngine {
         if (eventId == null) {
             val why = sent?.sendError?.toString() ?: "Beeper didn’t confirm it in time."
             note("send failed in ${roomId.full}: $why")
-            autoReport(if (sent == null) "send (no confirmation)" else "send (refused)", IllegalStateException(why))
-            error(why)
+            // The bubble is about to be taken back; the outbox must not send it later behind the
+            // user's back, or a retry arrives twice.
+            runCatching { c.room.cancelSendMessage(roomId, txn) }
+            val offline = why.contains("NetworkError") || why.contains("UnknownHost") || !phoneOnline()
+            if (!offline) {
+                autoReport(if (sent == null) "send (no confirmation)" else "send (refused)", IllegalStateException(why))
+            }
+            error(if (offline) "No connection. The message wasn’t sent." else why)
         }
         return ChatMessage(
             guid = eventId,
@@ -1122,8 +1269,8 @@ object BeeperEngine {
         if (t is CancellationException) throw t
         val message = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
         note("$what: $message")
-        _status.value = Status.Failed("$what: $message")
-        autoReport(what.lowercase(), t)
+        _status.value = Status.Failed(if (isNetworkError(t)) "$what: no connection." else "$what: $message")
+        if (!isNetworkError(t)) autoReport(what.lowercase(), t)
     }
 
     /** Files a report by itself; see [BeeperReports] for the throttle. Kind names the failure's family. */
@@ -1136,15 +1283,51 @@ object BeeperEngine {
     }
 
     /** The Settings button: send the log now, whatever the throttle says. */
-    suspend fun sendLogNow() {
-        val ctx = appContext ?: return
+    suspend fun sendLogNow(): Boolean {
+        val ctx = appContext ?: return false
+        val lines = _log.value.ifEmpty { readSavedLog(ctx) }
+        if (lines.isEmpty()) return false
         note("log sent from Settings")
-        BeeperReports.send(ctx, "log from settings", null, _log.value, manual = true)
+        BeeperReports.send(ctx, "log from settings", null, lines + _log.value.takeLast(1), manual = true)
+        return true
+    }
+
+    /** The log as the last process left it, for a report sent right after a restart. */
+    private fun readSavedLog(ctx: Context): List<String> =
+        runCatching { File(ctx.filesDir, LOG_FILE).readLines().takeLast(300) }.getOrDefault(emptyList())
+
+    private const val LOG_FILE = "beeper_log.txt"
+
+    /** Whether there is anything worth sending. */
+    fun hasLog(): Boolean = _log.value.isNotEmpty() || (appContext?.let { File(it.filesDir, LOG_FILE).length() > 0 } == true)
+
+    /** Whether the phone has a validated network right now. */
+    private fun phoneOnline(): Boolean {
+        val ctx = appContext ?: return true
+        return runCatching {
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            caps?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        }.getOrDefault(true)
     }
 
     fun note(line: String) {
         Log.d(TAG, line)
         val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        _log.value = (_log.value + "$stamp $line").takeLast(300)
+        val entry = "$stamp $line"
+        _log.value = (_log.value + entry).takeLast(300)
+        // Kept on disk too, so a report sent after a restart still says what happened. Trimmed to
+        // the last 300 lines whenever it passes 600.
+        appContext?.let { ctx ->
+            logWriter.execute {
+                runCatching {
+                    val f = File(ctx.filesDir, LOG_FILE)
+                    f.appendText(entry + "\n")
+                    if (f.length() > 64_000) f.writeText(f.readLines().takeLast(300).joinToString("\n", postfix = "\n"))
+                }
+            }
+        }
     }
+
+    private val logWriter = java.util.concurrent.Executors.newSingleThreadExecutor()
 }

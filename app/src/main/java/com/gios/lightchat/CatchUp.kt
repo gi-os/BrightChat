@@ -75,9 +75,11 @@ object CatchUp {
         // Beeper in parallel: its sync runs on its own scope while the sweep below does its REST
         // calls, and both have to fit the same Doze network window. Waited on at the end, within
         // a budget of its own. See BeeperEngine.catchUpAsync.
+        // Inside the gate, so overlapping triggers (screen on, network back, the alarm) start one
+        // Beeper wake rather than one each, and the losers return at once instead of waiting on it.
+        if (!running.compareAndSet(false, true)) return true
         val beeper = runCatching { com.gios.lightchat.beeper.BeeperEngine.catchUpAsync(context) }.getOrNull()
         try {
-            if (!running.compareAndSet(false, true)) return true
             return try {
                 runLocked(context)
             } finally {

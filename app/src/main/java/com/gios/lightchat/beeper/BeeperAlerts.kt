@@ -71,13 +71,43 @@ object BeeperAlerts {
         posted.clear()
     }
 
+    private const val KEY_POSTED = "posted"
+
+    /**
+     * [posted] on disk. Trixnity sends the `Remove` for an alert whenever the chat is read, which
+     * can be after the process restarted; with the map in memory only, that alert stayed up.
+     */
+    private fun loadPosted(ctx: Context) {
+        if (posted.isNotEmpty()) return
+        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_POSTED, null) ?: return
+        runCatching {
+            val o = org.json.JSONObject(raw)
+            o.keys().forEach { k -> posted[k] = o.getString(k) }
+        }
+    }
+
+    private fun savePosted(ctx: Context) {
+        // Bounded: an id is dropped when its Remove arrives, but a chat never read here never sends
+        // one, and the map must not grow for ever.
+        while (posted.size > 400) posted.keys.firstOrNull()?.let { posted.remove(it) } ?: break
+        val o = org.json.JSONObject()
+        posted.forEach { (k, v) -> o.put(k, v) }
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_POSTED, o.toString()).apply()
+    }
+
     /** Runs for the life of the client. Collected unbuffered, as Trixnity asks. */
     suspend fun watch(ctx: Context, c: MatrixClient) {
         val app = ctx.applicationContext
         val floor = since(app)
+        loadPosted(app)
         c.notification.getAllUpdates().collect { update ->
-            runCatching { handle(app, c, update, floor) }
-                .onFailure { BeeperEngine.note("alert failed: ${it.message}") }
+            try {
+                handle(app, c, update, floor)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                BeeperEngine.note("alert failed: ${e.message}")
+            }
         }
     }
 
@@ -85,6 +115,7 @@ object BeeperAlerts {
         when (update) {
             is NotificationUpdate.Remove -> {
                 val guid = posted.remove(update.id) ?: return
+                savePosted(ctx)
                 // One notification per chat: clear it only when nothing else is still open for it.
                 if (posted.values.none { it == guid }) {
                     Notifications.clearChat(ctx, listOf(guid))
@@ -106,6 +137,12 @@ object BeeperAlerts {
         fresh: Boolean,
     ) {
         if (PushAction.Notify !in actions) return
+        // An edit to something already alerted: change the words if the alert is still up, never
+        // bring back one the user dismissed.
+        if (!fresh) {
+            val guid = posted[id] ?: return
+            if (!Notifications.isShowing(ctx, guid)) return
+        }
         // Invites and other state changes: the list shows them, nothing to say out loud.
         val te = (content as? NotificationUpdate.Content.Message)?.timelineEvent ?: return
         if (te.event.sender == c.userId) return
@@ -129,6 +166,7 @@ object BeeperAlerts {
             findTarget = { target -> runCatching { MessageStore.get(ctx).messageByGuid(target) }.getOrNull() },
         )
         posted[id] = guid
+        savePosted(ctx)
 
         if (AppForeground.active) {
             PendingAlerts.add(guid, alert.title, alert.body, date, seen = guid in AppForeground.visibleChatGuids)

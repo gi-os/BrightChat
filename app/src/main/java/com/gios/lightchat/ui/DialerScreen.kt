@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -294,7 +295,7 @@ fun DialerScreen(
                                     )
                                 }
                             }
-                            items(recents, key = { "recent-" + it.call.date + it.call.via + (it.number ?: it.chatGuid) }) { recent ->
+                            itemsIndexed(recents, key = { i, it -> "recent-$i-" + it.call.date + it.call.via }) { _, recent ->
                                 DialRow(
                                     title = recent.name,
                                     subtitle = recent.call.kind + " · " + recent.call.via + " · " + listTime(context, recent.call.date),

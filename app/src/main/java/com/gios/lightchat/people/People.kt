@@ -103,7 +103,18 @@ object People {
                     if (!links.isSplit(group[i].guid, group[j].guid)) union(group[i].guid, group[j].guid)
                 }
             }
-        // By hand.
+        // Joins chain: a name match and a number match can each be sound and still, together,
+        // put two different people's iMessage chats in one row. So the guards are checked again on
+        // what came out — one chat per network, no hand split inside — and a component that fails
+        // keeps only what was joined by hand.
+        val auto = candidates.groupBy { find(it.guid) }.values.filter { it.size > 1 }
+        for (component in auto) {
+            val overlapping = component.groupBy(::networkOf).values.any { it.size > 1 }
+            val split = component.any { a -> component.any { b -> a.guid < b.guid && links.isSplit(a.guid, b.guid) } }
+            if (overlapping || split) component.forEach { parent[it.guid] = it.guid }
+        }
+
+        // By hand. Always wins: a person may have two iMessage chats (a number and an email).
         links.joined.forEach { (a, b) -> if (a in byGuid && b in byGuid) union(a, b) }
 
         val components = candidates.groupBy { find(it.guid) }.values.filter { it.size > 1 }
@@ -116,9 +127,11 @@ object People {
     fun person(members: List<Conversation>, favorites: Set<String>): Conversation {
         val sorted = members.sortedByDescending { it.lastDate }
         val newest = sorted.first()
+        // Stable whatever arrives next: the row's guid carries its nickname, notes and background,
+        // so it must not move from WhatsApp to Signal because Signal spoke last.
         val primary = sorted.firstOrNull { it.guid in favorites }
             ?: sorted.firstOrNull { !it.isBeeper }
-            ?: newest
+            ?: sorted.minBy { it.guid }
         return primary.copy(
             guids = sorted.flatMap { it.guids }.distinct(),
             members = sorted,
@@ -134,6 +147,23 @@ object People {
 
     /** The network a chat is on, as the thread's dividers and the list row name it. */
     fun networkOf(c: Conversation): String = c.network ?: "iMessage"
+
+    /**
+     * A phone number or an email in the form matching uses: lowercased email, or every digit with
+     * a bare ten-digit number taken as North American. Not [com.gios.lightchat.Contacts.key]'s
+     * last-ten-digits form, which makes +39 347 123 4567 and +1 347 123 4567 the same person.
+     * Null for anything too short to be a person's number (short codes, typos).
+     */
+    fun matchKey(address: String): String? {
+        val a = address.trim()
+        if (a.contains("@")) return a.lowercase().takeIf { it.length > 3 }
+        val digits = a.filter { it.isDigit() }
+        return when {
+            digits.length == 10 -> "1$digits"
+            digits.length < 8 -> null
+            else -> digits
+        }
+    }
 
     fun normalize(name: String): String =
         name.trim().lowercase().replace(Regex("\\s+"), " ")

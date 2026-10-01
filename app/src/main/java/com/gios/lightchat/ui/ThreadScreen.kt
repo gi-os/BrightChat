@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.content.ReceiveContentListener
@@ -112,7 +113,7 @@ fun ThreadScreen(viewModel: ChatViewModel) {
     // offer it.
     var reactingTo by remember { mutableStateOf<String?>(null) }
     // The message the full emoji picker is open for (Beeper only), or null.
-    var emojiFor by remember { mutableStateOf<ChatMessage?>(null) }
+    var emojiFor by remember(convo.guid) { mutableStateOf<ChatMessage?>(null) }
 
     // The message the next send replies to (chosen from the long-press menu),
     // shown as a banner above the compose bar until sent or cancelled.
@@ -223,7 +224,8 @@ fun ThreadScreen(viewModel: ChatViewModel) {
     // last month while the page appeared to fall downwards. Both overlays below stay
     // composed on top of this list, so the notch has to be handed to them instead —
     // otherwise the thread scrolls under a photo you're looking at.
-    WheelScroll(listState, active = viewingImage == null && !picking && !pickingGif, reverse = true)
+    // Not while an overlay owns the wheel: the emoji sheet has its own grid to scroll.
+    WheelScroll(listState, active = viewingImage == null && !picking && !pickingGif && emojiFor == null && viewingVideo == null, reverse = true)
 
     // Which messages begin a same-speaker run (so only they get a name label).
     val labeled = remember(state.messages) {
@@ -1549,7 +1551,8 @@ private fun CallsList(calls: List<com.gios.lightchat.people.CallEntry>, modifier
         return
     }
     LazyColumn(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(calls, key = { it.via + it.date + it.kind }) { call ->
+        // Indexed: two call-log rows can share a millisecond (dual SIM, a synced log).
+        itemsIndexed(calls, key = { i, it -> "$i:" + it.via + it.date + it.kind }) { _, call ->
             Row(modifier = Modifier.fillMaxWidth()) {
                 val length = if (call.durationSec > 0) " · " + (call.durationSec / 60).coerceAtLeast(1) + " min" else ""
                 Text(

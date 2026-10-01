@@ -40,6 +40,7 @@ import com.gios.lightchat.links.Instagram
 import com.gios.lightchat.ui.theme.ChatColors
 import com.gios.lightchat.ui.theme.ChatType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -63,7 +64,24 @@ fun InstagramCard(link: Instagram.Link, modifier: Modifier = Modifier) {
     val post by produceState<Instagram.Post?>(null, link.code) {
         value = withContext(Dispatchers.IO) { Instagram.post(link) }
     }
-    val p = post ?: return
+    val p = post
+    if (p == null) {
+        // Loading, or a post the embed won't describe (private, removed, offline): the link
+        // itself, which still opens. The message's own text is hidden when it is only this link,
+        // so without this the row was empty.
+        Text(
+            text = link.url,
+            style = ChatType.body.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline),
+            color = ChatColors.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { runCatching { uri.openUri(link.url) } },
+        )
+        return
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -129,7 +147,9 @@ private fun InstagramItem(link: Instagram.Link, item: Instagram.Item, index: Int
             loading = true
             failed = false
             scope.launch {
-                val f = withContext(Dispatchers.IO) { runCatching { Instagram.video(context, link, index) }.getOrNull() }
+                val f = withContext(Dispatchers.IO) {
+                    runCatching { Instagram.video(context, link, index) { !isActive } }.getOrNull()
+                }
                 loading = false
                 if (f != null) then(f) else failed = true
             }
@@ -139,7 +159,13 @@ private fun InstagramItem(link: Instagram.Link, item: Instagram.Item, index: Int
     Box(
         modifier = modifier
             .heightIn(max = 420.dp)
-            .aspectRatio(ratio.coerceIn(0.5f, 2f)),
+            .aspectRatio(ratio.coerceIn(0.5f, 2f))
+            // On the box, not the picture: a reel whose thumbnail didn't load can still be played.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = item.isVideo && video == null,
+            ) { fetch { video = it } },
         contentAlignment = Alignment.Center,
     ) {
         val playing = video
@@ -151,13 +177,7 @@ private fun InstagramItem(link: Instagram.Link, item: Instagram.Item, index: Int
                     bitmap = bmp.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            enabled = item.isVideo,
-                        ) { fetch { video = it } },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
             if (item.isVideo) {
@@ -187,6 +207,8 @@ private fun InlineVideo(file: File, onFullScreen: () -> Unit) {
             VideoView(ctx).apply {
                 setOnPreparedListener { mp ->
                     mp.isLooping = true
+                    // One reel at a time: starting this one stops whichever was playing.
+                    NowPlaying.take(this)
                     start()
                 }
                 setOnErrorListener { _, _, _ -> true }
@@ -203,6 +225,24 @@ private fun InlineVideo(file: File, onFullScreen: () -> Unit) {
         modifier = Modifier.fillMaxSize(),
     )
     DisposableEffect(file) {
-        onDispose { view?.stopPlayback() }
+        onDispose {
+            view?.let { NowPlaying.release(it) }
+            view?.stopPlayback()
+        }
+    }
+}
+
+/** The one inline reel allowed to play. */
+private object NowPlaying {
+    private var current: java.lang.ref.WeakReference<VideoView>? = null
+
+    fun take(view: VideoView) {
+        val previous = current?.get()
+        if (previous != null && previous !== view) runCatching { previous.pause() }
+        current = java.lang.ref.WeakReference(view)
+    }
+
+    fun release(view: VideoView) {
+        if (current?.get() === view) current = null
     }
 }

@@ -90,9 +90,13 @@ internal fun mergeIntoThread(list: List<ChatMessage>, incoming: ChatMessage): Li
  * recently edited of the two. Everything else — receipts, error, reactions folded later —
  * is the update's to set.
  */
-internal fun keepNewerEdit(existing: ChatMessage, incoming: ChatMessage): ChatMessage =
-    if (existing.dateEdited > incoming.dateEdited) {
+internal fun keepNewerEdit(existing: ChatMessage, incoming: ChatMessage): ChatMessage {
+    val merged = if (existing.dateEdited > incoming.dateEdited) {
         incoming.copy(text = existing.text, dateEdited = existing.dateEdited)
     } else {
         incoming
     }
+    // Which chat a message came from never changes, and a delivery or read update usually doesn't
+    // say. Losing it sent replies and tapbacks in a person's thread to the wrong network.
+    return if (merged.room == null && existing.room != null) merged.copy(room = existing.room) else merged
+}

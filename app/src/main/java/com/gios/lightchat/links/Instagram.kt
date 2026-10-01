@@ -115,11 +115,20 @@ object Instagram {
 
     private val posts = ConcurrentHashMap<String, Post>()
 
+    /** Posts that could not be read, and when: not asked again for [RETRY_FAILED_MS]. */
+    private val failed = ConcurrentHashMap<String, Long>()
+    private const val RETRY_FAILED_MS = 10 * 60_000L
+
     /** The post behind [link], read from the embed page. Blocking; call off the main thread. */
     fun post(link: Link, refresh: Boolean = false): Post? {
         if (!refresh) posts[link.code]?.let { return it }
-        val html = get(embedUrl(link))?.toString(Charsets.UTF_8) ?: return null
-        return parseEmbed(link.code, html)?.also { posts[link.code] = it }
+        // A private or removed post answers the same way every time; a row that scrolls in and
+        // out must not fetch a 600 KB page each time it does.
+        failed[link.code]?.let { at -> if (!refresh && System.currentTimeMillis() - at < RETRY_FAILED_MS) return null }
+        val html = getBytes(embedUrl(link), EMBED_MAX_BYTES)?.toString(Charsets.UTF_8)
+        val post = html?.let { parseEmbed(link.code, it) }
+        if (post == null) failed[link.code] = System.currentTimeMillis() else failed.remove(link.code)
+        return post?.also { posts[link.code] = it }
     }
 
     private fun dir(context: Context) = File(context.cacheDir, "instagram").apply { mkdirs() }
@@ -128,57 +137,101 @@ object Instagram {
     fun image(context: Context, link: Link, index: Int, maxWidth: Int = 720): Bitmap? {
         val file = File(dir(context), "${link.code}_$index.jpg")
         if (!file.exists() || file.length() == 0L) {
-            val bytes = fetchMedia(link, index) { it.imageUrl } ?: return null
-            file.writeBytes(bytes)
+            if (!fetchMedia(context, link, index, file, IMAGE_MAX_BYTES, { false }) { it.imageUrl }) return null
         }
         return decode(file, maxWidth)
     }
 
-    /** Item [index]'s video, downloaded once. Null for a picture, or when it can't be fetched. */
-    fun video(context: Context, link: Link, index: Int): File? {
+    /**
+     * Item [index]'s video, downloaded once. Null for a picture, or when it can't be fetched.
+     * [cancelled] is asked between reads, so leaving the thread stops a download mid-way.
+     */
+    fun video(context: Context, link: Link, index: Int, cancelled: () -> Boolean = { false }): File? {
         val file = File(dir(context), "${link.code}_$index.mp4")
         if (file.exists() && file.length() > 0L) return file
-        val bytes = fetchMedia(link, index) { it.videoUrl } ?: return null
-        val tmp = File(file.path + ".part")
-        tmp.writeBytes(bytes)
-        return if (tmp.renameTo(file)) file else null
+        return if (fetchMedia(context, link, index, file, VIDEO_MAX_BYTES, cancelled) { it.videoUrl }) file else null
     }
 
-    /** A media URL from the post, re-reading the embed once if the signed URL has gone stale. */
-    private fun fetchMedia(link: Link, index: Int, pick: (Item) -> String?): ByteArray? {
+    /**
+     * A media file from the post into [dest], re-reading the embed once if the signed URL has gone
+     * stale. Written to a `.part` file and renamed, so a cut connection never leaves a half picture
+     * that would be shown for ever.
+     */
+    private fun fetchMedia(
+        context: Context,
+        link: Link,
+        index: Int,
+        dest: File,
+        maxBytes: Long,
+        cancelled: () -> Boolean,
+        pick: (Item) -> String?,
+    ): Boolean {
+        prune(dir(context))
         for (refresh in listOf(false, true)) {
-            val url = post(link, refresh)?.items?.getOrNull(index)?.let(pick) ?: return null
-            get(url, maxBytes = MAX_MEDIA_BYTES)?.let { return it }
+            val url = post(link, refresh)?.items?.getOrNull(index)?.let(pick) ?: return false
+            if (!isMediaHost(url)) return false
+            val tmp = File(dest.path + ".part")
+            if (download(url, tmp, maxBytes, cancelled) && tmp.renameTo(dest)) return true
+            tmp.delete()
+            if (cancelled()) return false
         }
-        return null
+        return false
+    }
+
+    /** Instagram's own CDNs only: a post's JSON must not send the phone to fetch from anywhere. */
+    fun isMediaHost(url: String): Boolean {
+        val host = runCatching { URL(url) }.getOrNull()?.takeIf { it.protocol == "https" }?.host?.lowercase() ?: return false
+        return host.endsWith(".cdninstagram.com") || host.endsWith(".fbcdn.net")
+    }
+
+    /** The folder kept under [CACHE_MAX_BYTES]: oldest files go first. */
+    private fun prune(dir: File) {
+        val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
+        var total = files.sumOf { it.length() }
+        val weekAgo = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+        for (f in files) {
+            if (total <= CACHE_MAX_BYTES && f.lastModified() > weekAgo) break
+            total -= f.length()
+            f.delete()
+        }
     }
 
     private fun decode(file: File, maxWidth: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
-        if (bounds.outWidth <= 0) return null
+        if (bounds.outWidth <= 0) {
+            file.delete()
+            return null
+        }
         var sample = 1
         while (bounds.outWidth / (sample * 2) >= maxWidth) sample *= 2
         return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 
-    /** Reels run a few MB; anything past this is not a reel. */
-    private const val MAX_MEDIA_BYTES = 60L * 1024 * 1024
+    /** A reel is a few MB; past this it is not one, and the phone has a 128 MB heap. */
+    private const val VIDEO_MAX_BYTES = 25L * 1024 * 1024
+    private const val IMAGE_MAX_BYTES = 8L * 1024 * 1024
+    private const val EMBED_MAX_BYTES = 2L * 1024 * 1024
+    private const val CACHE_MAX_BYTES = 200L * 1024 * 1024
 
-    private fun get(url: String, maxBytes: Long = 4L * 1024 * 1024): ByteArray? = runCatching {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+    private fun open(url: String): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", UA)
             setRequestProperty("Accept-Language", "en-US,en;q=0.9")
         }
+
+    /** A small response in memory (the embed page). */
+    private fun getBytes(url: String, maxBytes: Long): ByteArray? = runCatching {
+        val conn = open(url)
         try {
             if (conn.responseCode !in 200..299) return@runCatching null
             if (conn.contentLengthLong > maxBytes) return@runCatching null
             conn.inputStream.use { input ->
                 val out = java.io.ByteArrayOutputStream()
-                val buf = ByteArray(64 * 1024)
+                val buf = ByteArray(32 * 1024)
                 var total = 0L
                 while (true) {
                     val n = input.read(buf)
@@ -193,4 +246,32 @@ object Instagram {
             conn.disconnect()
         }
     }.getOrNull()
+
+    /** A media file streamed to disk, never held in memory whole. */
+    private fun download(url: String, dest: File, maxBytes: Long, cancelled: () -> Boolean): Boolean = runCatching {
+        val conn = open(url)
+        try {
+            if (conn.responseCode !in 200..299) return@runCatching false
+            // Redirected somewhere that isn't Instagram's CDN (a login page, say): not ours.
+            if (!isMediaHost(conn.url.toString())) return@runCatching false
+            if (conn.contentLengthLong > maxBytes) return@runCatching false
+            conn.inputStream.use { input ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        if (cancelled()) return@runCatching false
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > maxBytes) return@runCatching false
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+            dest.length() > 0
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(false)
 }
