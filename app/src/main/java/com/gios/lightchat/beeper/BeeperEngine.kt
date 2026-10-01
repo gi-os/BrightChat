@@ -148,6 +148,9 @@ object BeeperEngine {
     private const val MEDIA_DIR = "beeper_media"
     private const val DEVICE_NAME = "BrightChat (Light Phone)"
 
+    /** The characters a recovery key is written in: no 0, O, I or l. */
+    private const val BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
     /** How much of a room one thread fetch reads. */
     private const val PAGE = 50
     private const val DECRYPT_WAIT_MS = 3_000L
@@ -371,6 +374,8 @@ object BeeperEngine {
         }
         val key = recoveryKey.filter { it.isLetterOrDigit() }
         require(key.length >= 48) { "A recovery key is 48 characters; that was ${key.length}." }
+        val bad = key.firstOrNull { it !in BASE58 }
+        require(bad == null) { "That recovery key has a character that can't appear in one: '$bad'. Check it and try again." }
         val keyBytes = decodeRecoveryKey(key)
         val accountData = c.di.get<GlobalAccountDataStore>(GlobalAccountDataStore::class)
         val keyId = accountData.get(DefaultSecretKeyEventContent::class).first()?.content?.key

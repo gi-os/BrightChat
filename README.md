@@ -20,7 +20,7 @@ install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
 **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
 
-**Current version: v2.35.x.** See [Version history](#version-history).
+**Current version: v2.49.x.** See [Version history](#version-history).
 
 > ### About this fork
 >

@@ -1,3 +1,15 @@
+## BrightChat v2.49: a recovery key typo says what it is
+
+**Verifying with a recovery key could fail with "Illegal character l at position 19" and
+nothing else.** The typed key had a character that can't appear in a base58 recovery key,
+which leaves out 0, O, I and lowercase l because they are easy to mix up. The decoder
+rejected it with its own message, and that message went straight to the screen.
+
+The app now checks the key before decoding it and says so plainly, naming the character, so
+you know which one to fix.
+
+Fixes light-reports#570 (duplicate of #569).
+
 ## BrightChat v2.43 — Reply and Edit you can read
 
 **The tapback menu put six glyphs, Reply and Edit on one line, and the words lost.** The glyphs
