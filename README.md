@@ -176,11 +176,6 @@ report.
 iMessage stays on BlueBubbles. Beeper runs on the phone and talks to Beeper's servers; no Mac
 is needed for it.
 
-**Instagram links.** A link to an Instagram post or reel shows the post in the thread: the
-picture (every photo of a carousel), the account and the caption. Tap a reel to play it in place,
-tap again to pause, and hold it for full screen. This works for public posts in any chat,
-iMessage included, and needs no Instagram account.
-
 **One row per person.** With Beeper signed in, a person you talk to on iMessage and WhatsApp (or
 any two networks) is one row. BrightChat joins two chats only when both are one-to-ones, both
 resolve to the same full name (the address book's name for the iMessage chat, the network's name
@@ -468,9 +463,9 @@ Real tags, oldest to newest (the early `0.x` history predates the `gi-os` fork's
 | v2.33.x | Long-press is star/unstar on every tab — a star is no longer a one-way trip; pinning moved to the swipe reveal on Favorites |
 | v2.34.x | Fix: starting a message to a number saved under two contacts no longer crashes the list (light-reports#291) |
 | v2.35.x | Fix: an old message no longer resurfaces as the row's preview when a late read receipt or delivery stamp arrives (light-reports#292) |
-| v2.51.x | A one-time **What's new** page on launch: Beeper, one row per person, notifications, any emoji, Instagram, calls and voicemail, with **Set up Beeper** straight to Settings |
-| v2.50.x | Hardening pass before the first official Beeper release: replies and tapbacks in a person's thread always go back to the chat the message came from; chained matches can't put two people in one row; numbers from different countries no longer match; sign-in can't get stuck; Beeper reports only real faults; Send log and Sign out take two taps; Instagram reels download to disk, one plays at a time, and a link that won't load still shows |
-| v2.48.x (nightly) | Any emoji as a Beeper reaction (search, recents, every group); people joined by phone number or email; Instagram posts and reels shown in the thread, reels playing in place |
+| v2.51.x | A one-time **What's new** page on launch: Beeper, one row per person, notifications, any emoji, calls and voicemail, with **Set up Beeper** straight to Settings |
+| v2.50.x | Hardening pass before the first official Beeper release: replies and tapbacks in a person's thread always go back to the chat the message came from; chained matches can't put two people in one row; numbers from different countries no longer match; sign-in can't get stuck; Beeper reports only real faults; Send log and Sign out take two taps |
+| v2.48.x (nightly) | Any emoji as a Beeper reaction (search, recents, every group); people joined by phone number or email |
 | v2.47.x (nightly) | **Beeper notifications**: alerts for WhatsApp, Signal and the rest, following your Beeper mute settings, with an ntfy wake-up while the phone sleeps. Beeper works with no Mac set up at all |
 | v2.46.x (nightly) | Dial tab: **Voicemail** in the corner rings your carrier voicemail; the keypad folds away until you tap **Keypad** |
 | v2.45.x (nightly) | **People** (Beeper on only): one row per person across iMessage and Beeper networks, a thread with All · iMessage · WhatsApp · Calls, "on WhatsApp" dividers, a "via" line choosing where the next message goes, call history (phone calls and bridge call notices), and Link / Unlink on the contact page. Beeper failures send a redacted log report by themselves |

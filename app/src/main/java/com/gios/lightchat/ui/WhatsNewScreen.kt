@@ -94,10 +94,6 @@ fun WhatsNewScreen(beeperOn: Boolean, onSetUpBeeper: () -> Unit, onDone: () -> U
             "Hold a Beeper message and tap + after the tapbacks to react with any emoji.",
         )
         Section(
-            "Instagram",
-            "A shared post or reel shows in the thread. Tap a reel to play it there.",
-        )
-        Section(
             "Calls and voicemail",
             "The Dial tab lists recent calls, and Voicemail is one tap. The keypad opens when you ask for it.",
         )
