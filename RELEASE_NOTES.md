@@ -1,3 +1,16 @@
+## BrightChat v2.52: iPhone videos play with the picture
+
+**A `.mov` from an iPhone played its sound over a black screen.** Recent iPhones record video
+as HEVC, and by default in HDR (Dolby Vision). The old player found no Dolby Vision decoder on
+the phone, dropped the picture without an error, and kept playing the audio.
+
+The video screen now uses ExoPlayer. A Dolby Vision clip from an iPhone is HEVC underneath, and
+ExoPlayer plays it with the phone's HEVC decoder.
+
+If a clip still can't play, the screen stops and names the format, for example "This video is
+HEVC HDR, which this phone can't decode." It also tells the sender what to change: on an
+iPhone, Settings › Camera › Formats › Most Compatible records H.264, which always plays.
+
 ## BrightChat v2.49: a recovery key typo says what it is
 
 **Verifying with a recovery key could fail with "Illegal character l at position 19" and

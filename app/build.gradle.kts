@@ -80,7 +80,7 @@ android {
         targetSdk = 35
         // CI overwrites both from the workflow run number; see .github/workflows/build.yml
         versionCode = 19
-        versionName = "2.51.0"
+        versionName = "2.52.0"
 
         buildConfigField("String", "REPORT_TOKEN", "\"$reportToken\"")
         // Scrambled, not encrypted — see [scramble]. Decoded by `api/KlipyKey.kt`.
@@ -195,6 +195,11 @@ dependencies {
     // learned to on Android 12 — so without this the profile is inert bytes in the APK and
     // the first cold start after an update is fully interpreted.
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+
+    // Video playback. VideoView (MediaPlayer) played an iPhone's HDR .mov as sound over a black
+    // screen; ExoPlayer falls a Dolby Vision track back to the HEVC decoder. Exoplayer core only —
+    // no media3-ui, the player screen is ours. See ui/VideoPlayerScreen.kt.
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
 
     val composeBom = platform("androidx.compose:compose-bom:2025.12.01")
     implementation(composeBom)
