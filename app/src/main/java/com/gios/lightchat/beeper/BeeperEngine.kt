@@ -360,7 +360,7 @@ object BeeperEngine {
         require(address.contains("@")) { "That doesn’t look like an email address." }
         val init = beeperPost("/user/login", "{}")
         val request = init.optString("request").takeIf { it.isNotBlank() } ?: error("Beeper didn’t start a login.")
-        beeperPost("/user/login/email", JSONObject().put("request", request).put("email", address).toString())
+        beeperPost("/user/login/email", BeeperLogin.emailBody(request, address))
         prefs(ctx).edit().putString(KEY_REQUEST, request).putString(KEY_EMAIL, address)
             .putLong(KEY_REQUEST_AT, System.currentTimeMillis()).apply()
         _status.value = Status.CodeSent(address)
@@ -384,7 +384,7 @@ object BeeperEngine {
         val response = try {
             beeperPost(
                 "/user/login/response",
-                JSONObject().put("request", request).put("response", code.trim()).toString(),
+                BeeperLogin.codeBody(request, code.trim()),
             )
         } catch (e: BeeperHttpException) {
             if (e.code == 403 || e.code == 401) {
