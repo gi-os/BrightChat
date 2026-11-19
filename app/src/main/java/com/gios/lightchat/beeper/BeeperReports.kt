@@ -1,9 +1,12 @@
 package com.gios.lightchat.beeper
 
 import android.content.Context
+import com.gios.light.common.report.Draft
 import com.gios.light.common.report.Failure
+import com.gios.light.common.report.Kind
 import com.gios.light.common.report.Reports
 import com.gios.light.common.report.Symptom
+import com.gios.light.common.report.Wish
 import java.security.MessageDigest
 
 /**
@@ -61,8 +64,14 @@ object BeeperReports {
         }
         val report = Reports.compose(
             context = context,
-            symptom = Symptom.Other,
-            note = if (manual) "Beeper log, sent from Settings" else "Beeper: $kind (sent automatically)",
+            draft = Draft(
+                kind = Kind.Bug,
+                symptom = Symptom.Other,
+                wish = Wish.Other,
+                note = if (manual) "Beeper log, sent from Settings" else "Beeper: $kind (sent automatically)",
+                phone = "",
+                includeShot = false,
+            ),
             screen = "beeper",
             crash = null,
             failure = Failure(what = "beeper: $kind", detail = detail.take(20_000)),
