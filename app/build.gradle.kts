@@ -17,23 +17,8 @@ val keystoreProps = Properties().apply {
 }
 
 /**
- * The key shake-to-report posts issues with. Never in the repository: `local.properties` is
- * ignored by git, and CI hands it in from a repository secret. An empty string is a working
- * build — reports queue on the phone and go out from a later one that has the key.
- */
-val reportToken: String = run {
-    val local = rootProject.file("local.properties")
-    val fromFile = if (local.exists()) {
-        Properties().apply { local.inputStream().use { load(it) } }.getProperty("reportToken")
-    } else {
-        null
-    }
-    fromFile ?: System.getenv("REPORT_TOKEN") ?: ""
-}
-
-/**
  * The GIF search key the app ships with, so that GIFs work on a fresh install with nothing to set
- * up. Read exactly like [reportToken] above — `local.properties` (git-ignored) for a local build,
+ * up. Read from `local.properties` (git-ignored) for a local build,
  * the `KLIPY_KEY` repository secret in CI — and for the same reason: **this repository is public**,
  * and a key committed to it is a key that is scraped within days and rate-limited for every user of
  * the app. An empty string is a working build; GIF search is then off until somebody puts their own
@@ -82,7 +67,6 @@ android {
         versionCode = 19
         versionName = "2.53.0"
 
-        buildConfigField("String", "REPORT_TOKEN", "\"$reportToken\"")
         // Scrambled, not encrypted — see [scramble]. Decoded by `api/KlipyKey.kt`.
         buildConfigField("String", "KLIPY_KEY", "\"${scramble(klipyKey)}\"")
         buildConfigField("String", "REPORT_REPO", "\"gi-os/light-reports\"")
