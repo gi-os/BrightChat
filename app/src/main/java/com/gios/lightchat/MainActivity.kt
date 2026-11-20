@@ -108,7 +108,8 @@ class MainActivity : ComponentActivity() {
             context = this,
             appName = "LightChat",
             label = "chat",
-            token = BuildConfig.REPORT_TOKEN,
+            // No key on the phone: reports queue until light-common 1.11.0, which posts them to the report relay.
+            token = "",
         )
         Notifications.ensureChannels(this)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=

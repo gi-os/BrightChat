@@ -115,9 +115,6 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
         env:
-          # Shake-to-report posts issues with this. Absent, the build still works —
-          # reports queue on the phone until a build that has the key installs over it.
-          REPORT_TOKEN: ${{ secrets.REPORT_TOKEN }}
           # The GIF search key the app ships with. Absent, the build still works — GIF search is
           # then off until somebody puts their own key in Settings. Never in the repository: this
           # one is public. See app/build.gradle.kts.
